@@ -28,7 +28,7 @@ LOG_MODULE_REGISTER(xen_enlighten);
 static uint8_t shared_info_buf[XEN_PAGE_SIZE] __aligned(XEN_PAGE_SIZE);
 
 /* Remains NULL until mapping will be finished by Xen */
-shared_info_t *HYPERVISOR_shared_info;
+shared_info_t *HYPERVISOR_shared_info = NULL;
 
 static int xen_map_shared_info(const shared_info_t *shared_page)
 {
