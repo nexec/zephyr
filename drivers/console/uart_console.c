@@ -595,7 +595,7 @@ static int uart_console_init(const struct device *arg)
 		return -ENODEV;
 	}
 
-	uart_console_hook_install();
+	/* uart_console_hook_install(); */
 
 	return 0;
 }
