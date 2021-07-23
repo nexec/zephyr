@@ -20,6 +20,7 @@
 #include <xen/public/io/xs_wire.h>
 #include <xen/public/xen.h>
 #include <xen/xs.h>
+#include "xenbus/xs_watch.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -42,6 +43,10 @@ K_KERNEL_STACK_DEFINE(read_thrd_stack, 1024);
 struct k_thread read_thrd;
 k_tid_t read_tid;
 
+K_KERNEL_STACK_DEFINE(read_thrd2_stack, 1024);
+struct k_thread read_thrd2;
+k_tid_t read_tid2;
+
 #define DEBUG_XENBUS
 
 #ifdef DEBUG_XENBUS
@@ -59,24 +64,72 @@ static struct xs_handler xs_hdlr;
 
 static struct xs_request_pool xs_req_pool;
 
+static sys_slist_t watch_list;
 
 
 
+
+static void xs_bitmap_init(struct xs_request_pool *pool)
+{
+	int i;
+	/* bitmap length in bits */
+	int bm_len = XS_REQ_BM_SIZE * sizeof(*pool->entries_bm) * __CHAR_BIT__;
+
+	for (i = 0; i < XS_REQ_BM_SIZE; i++) {
+		/* fill request bitmap with "1" */
+		pool->entries_bm[i] = ULONG_MAX;
+	}
+
+	/* Clear last bits in bitmap, that are outside of XS_REQ_POLL_SIZE */
+	for (i = XS_REQ_POOL_SIZE + 1; i < bm_len; i++) {
+		sys_bitfield_clear_bit((mem_addr_t) pool->entries_bm, i);
+	}
+}
 
 static void xs_request_pool_init(struct xs_request_pool *pool)
 {
 	struct xs_request *xs_req;
+	int i;
 
 	pool->num_live = 0;
-	pool->last_probed = -1;
 	k_sem_init(&pool->sem, 0, 1);
 	sys_slist_init(&pool->queued);
-	memset(pool->entries_bm, 0, sizeof(pool->entries_bm));
-	for (int i = 0; i < XS_REQ_POOL_SIZE; i++) {
+
+	xs_bitmap_init(pool);
+
+	for (i = 0; i < XS_REQ_POOL_SIZE; i++) {
 		xs_req = &pool->entries[i];
 		xs_req->hdr.req_id = i;
 		k_sem_init(&xs_req->sem, 0, 1);
 	}
+}
+
+/*
+ * Searches first available entry in bitmap (first marked with 1).
+ */
+static int get_free_entry_idx(struct xs_request_pool *pool)
+{
+	int i, res;
+
+	/* Bit at pos XS_REQ_POOL_SIZE is a border, it always stays "1". */
+	for (i = 0; i < XS_REQ_BM_SIZE; i++) {
+		if (pool->entries_bm[i]) {
+			/* contain at least one fired bit ("1") */
+			break;
+		}
+	}
+
+	/*
+	 * Now we have "i" which points to element in bitmap with
+	 * free entry. Calculating offset of this element in bitmap.
+	 */
+	res = i * sizeof(*pool->entries_bm) * __CHAR_BIT__;
+
+	/* Add exact fired bit position */
+	res += __builtin_ctzl(pool->entries_bm[i]);
+
+	xenbus_printk("%s: returning entry #%d, i = %d\n", __func__, res, i);
+	return res;
 }
 
 /*
@@ -102,19 +155,17 @@ static struct xs_request *xs_request_get(void)
 		k_sem_take(&xs_req_pool.sem, K_FOREVER);
 	}
 
-//	/* find an available entry */
-//	entry_idx =
-//		uk_find_next_zero_bit(xs_req_pool.entries_bm, XS_REQ_POOL_SIZE,
-//			(xs_req_pool.last_probed + 1) & XS_REQ_POOL_MASK);
-//
-//	if (entry_idx == XS_REQ_POOL_SIZE)
-//		entry_idx = uk_find_next_zero_bit(xs_req_pool.entries_bm,
-//			XS_REQ_POOL_SIZE, 0);
+	entry_idx = get_free_entry_idx(&xs_req_pool);
 
-	entry_idx = 0;
+	/*
+	 * Getting of free entry is called after num_live is less than pool
+	 * size (spinlock is still held), so we do not expect to reach the
+	 * bitmap border. If so, something went totally wrong.
+	 */
+	__ASSERT(entry_idx != XS_REQ_POOL_SIZE,
+		"Received border entry index for xs_req_pool!\n");
 
-	sys_set_bit((mem_addr_t) xs_req_pool.entries_bm, entry_idx);
-	xs_req_pool.last_probed = entry_idx;
+	sys_bitfield_clear_bit((mem_addr_t) xs_req_pool.entries_bm, entry_idx);
 	xs_req_pool.num_live++;
 
 	k_spin_unlock(&xs_req_pool.lock, key);
@@ -128,16 +179,20 @@ static void xs_request_put(struct xs_request *xs_req)
 	uint32_t reqid = xs_req->hdr.req_id;
 	k_spinlock_key_t key;
 
-	xenbus_printk("%s: in, reqid = %d, xs_req - %p\n", __func__, reqid, xs_req);
+	xenbus_printk("%s: in, reqid = %d, xs_req - %p\n", __func__,
+			reqid, xs_req);
 	key = k_spin_lock(&xs_req_pool.lock);
 
-	__ASSERT(sys_test_bit((mem_addr_t) xs_req_pool.entries_bm, reqid) == 1, "trying to put free request!");
+	__ASSERT(sys_test_bit((mem_addr_t) xs_req_pool.entries_bm, reqid) == 1,
+			"trying to put free request!");
 
-	sys_clear_bit((mem_addr_t) xs_req_pool.entries_bm, reqid);
+	sys_bitfield_set_bit((mem_addr_t) xs_req_pool.entries_bm, reqid);
 	xs_req_pool.num_live--;
 
-	if (xs_req_pool.num_live == XS_REQ_POOL_SIZE - 1)
+	/* Someone probably is now waiting for free xs_request from pool */
+	if (xs_req_pool.num_live == XS_REQ_POOL_SIZE - 1) {
 		k_sem_give(&xs_req_pool.sem);
+	}
 
 	k_spin_unlock(&xs_req_pool.lock, key);
 }
@@ -331,8 +386,6 @@ int xs_msg_reply(enum xsd_sockmsg_type msg_type, xenbus_transaction_t xbt,
 			break;
 		}
 	}
-//	uk_waitq_wait_event(&xs_req->waitq,
-//		xs_req->reply.recvd != 0);
 
 	err = -xs_req->reply.errornum;
 	if (err == 0) {
@@ -397,7 +450,7 @@ static void process_reply(struct xsd_sockmsg *hdr, char *payload)
 {
 	struct xs_request *xs_req;
 
-	if (!sys_test_bit((mem_addr_t) xs_req_pool.entries_bm, hdr->req_id)) {
+	if (sys_test_bit((mem_addr_t) xs_req_pool.entries_bm, hdr->req_id)) {
 		LOG_WRN("Invalid reply id=%d\n", hdr->req_id);
 		k_free(payload);
 		return;
@@ -427,18 +480,111 @@ static void process_reply(struct xsd_sockmsg *hdr, char *payload)
 	k_sem_give(&xs_req->sem);
 }
 
+
+
+
+
+
+
+
+static int xs_watch_info_equal(const struct xs_watch_info *xswi,
+	const char *path, const char *token)
+{
+	return (strcmp(xswi->path, path) == 0 &&
+		strcmp(xswi->token, token) == 0);
+}
+
+struct xs_watch *xs_watch_create(const char *path)
+{
+	struct xs_watch *xsw;
+	const int token_size = sizeof(xsw) * 2 + 1;
+	char *tmpstr;
+	int stringlen;
+
+	__ASSERT_NO_MSG(path != NULL);
+
+	stringlen = token_size + strlen(path) + 1;
+
+	xsw = k_malloc(sizeof(*xsw) + stringlen);
+	if (!xsw)
+		return NULL;
+
+	xsw->base.pending_events = 0;
+	k_sem_init(&xsw->base.sem, 0, 1);
+
+	/* set path */
+	tmpstr = (char *) (xsw + 1);
+	strcpy(tmpstr, path);
+	xsw->xs.path = tmpstr;
+
+	/* set token (watch address as string) */
+	tmpstr += strlen(path) + 1;
+	sprintf(tmpstr, "%lx", (long) xsw);
+	xsw->xs.token = tmpstr;
+
+	sys_slist_prepend(&watch_list, &xsw->base.node);
+
+	return xsw;
+}
+
+int xs_watch_destroy(struct xs_watch *watch)
+{
+	struct xenbus_watch *xbw;
+	struct xenbus_watch *prev = NULL;
+	struct xs_watch *xsw;
+	int err = -ENOENT;
+
+	__ASSERT_NO_MSG(watch != NULL);
+
+	SYS_SLIST_FOR_EACH_CONTAINER(&watch_list, xbw, node) {
+		xsw = CONTAINER_OF(xbw, struct xs_watch, base);
+
+		if (xsw == watch) {
+			sys_slist_remove(&watch_list, &prev->node, &xbw->node);
+			k_free(xsw);
+			err = 0;
+			break;
+		}
+
+		/*
+		 * Needed to optimize removal process in single-linked list
+		 * (to not use sys_slist_find_and_remove()). Can be NULL
+		 * if xbw is a list head.
+		 */
+		prev = xbw;
+	}
+
+	return err;
+}
+
+struct xs_watch *xs_watch_find(const char *path, const char *token)
+{
+	struct xenbus_watch *xbw;
+	struct xs_watch *xsw;
+
+	SYS_SLIST_FOR_EACH_CONTAINER(&watch_list, xbw, node) {
+		xsw = CONTAINER_OF(xbw, struct xs_watch, base);
+
+		if (xs_watch_info_equal(&xsw->xs, path, token))
+			return xsw;
+	}
+
+	return NULL;
+}
+
 /* Process an incoming xs watch event */
 static void process_watch_event(char *watch_msg)
 {
-//	struct xs_watch *watch;
-//	char *path, *token;
-//
-//	path  = watch_msg;
-//	token = watch_msg + strlen(path) + 1;
-//
-//	watch = xs_watch_find(path, token);
-//	k_free(watch_msg);
-//
+	struct xs_watch *watch;
+	char *path, *token;
+
+	path  = watch_msg;
+	token = watch_msg + strlen(path) + 1;
+
+	watch = xs_watch_find(path, token);
+	k_free(watch_msg);
+
+	/* TODO: Fix it when client.c will be ported */
 //	if (watch)
 //		xenbus_watch_notify_event(&watch->base);
 //	else
@@ -597,14 +743,72 @@ char *xs_read(xenbus_transaction_t xbt, const char *path, const char *node)
 	return value;
 }
 
+/* Returns an array of strings out of the serialized reply */
+static char **reply_to_string_array(struct xs_iovec *rep, int *size)
+{
+	int strings_num, offs, i;
+	char *rep_strings, *strings, **res = NULL;
+
+	rep_strings = rep->data;
+
+	/* count the strings */
+	for (offs = strings_num = 0; offs < (int) rep->len; offs++)
+		strings_num += (rep_strings[offs] == 0);
+
+	/* one alloc for both string addresses and contents */
+	res = k_malloc((strings_num + 1) * sizeof(char *) + rep->len);
+//	if (!res)
+//		return ERR2PTR(-ENOMEM);
+
+	/* copy the strings to the end of the array */
+	strings = (char *) &res[strings_num + 1];
+	memcpy(strings, rep_strings, rep->len);
+
+	/* fill the string array */
+	for (offs = i = 0; i < strings_num; i++) {
+		char *string = strings + offs;
+		int string_len = strlen(string);
+
+		res[i] = string;
+
+		offs += string_len + 1;
+	}
+	res[i] = NULL;
+
+	if (size)
+		*size = strings_num;
+
+	return res;
+}
+
+char **xs_ls(xenbus_transaction_t xbt, const char *path)
+{
+	struct xs_iovec req, rep;
+	char **res = NULL;
+	int err;
+
+	if (path == NULL)
+		return NULL;
+
+	req = XS_IOVEC_STR_NULL((char *) path);
+	err = xs_msg_reply(XS_DIRECTORY, xbt, &req, 1, &rep);
+	if (err)
+		return NULL;
+
+	res = reply_to_string_array(&rep, NULL);
+	k_free(rep.data);
+
+	return res;
+}
+
 static void xenbus_read_thrd(void *p1, void *p2, void *p3)
 {
 	ARG_UNUSED(p1);
 	ARG_UNUSED(p2);
 	ARG_UNUSED(p3);
 
-//	char **dirs;
-//	int x;
+	char **dirs;
+	int x;
 
 //	/* TODO: Read domid, then /local/domain/$domid */
 	char *pre = "domid", buf[50];
@@ -616,27 +820,71 @@ static void xenbus_read_thrd(void *p1, void *p2, void *p3)
 //		return;
 //	}
 	if (!domid) {
-		printk ("NULL domid\n");
+		printk("NULL domid\n");
 		return;
 	}
 
 	printk("%s: domid returned = %s\n", __func__, domid);
-//
-//	snprintf(buf, 50, "/local/domain/%s", domid);
-//	printk("%s: running xenbus ls for %s\n", __func__, buf);
-//	msg = xenbus_ls(XBT_NIL, buf, &dirs);
+
+	snprintf(buf, 50, "/local/domain/%s", domid);
+	printk("%s: running xenbus ls for %s\n", __func__, buf);
+	dirs = xs_ls(XBT_NIL, buf);
 //	if (msg) {
 //		printk("Error in xenbus ls: %s\n", msg);
 //		k_free(msg);
 //		return;
 //	}
-//
-//	printk("xenbus_ls test results for pre = %s\n", buf);
-//	for (x = 0; dirs[x]; x++)
-//	{
-//		printk("ls %s[%d] -> %s\n", buf, x, dirs[x]);
-//		k_free(dirs[x]);
+
+	printk("xenbus_ls test results for pre = %s\n", buf);
+	for (x = 0; dirs[x]; x++)
+	{
+		printk("ls %s[%d] -> %s\n", buf, x, dirs[x]);
+		//k_free(dirs[x]);
+	}
+//	k_free(dirs);
+}
+
+
+static void xenbus_read_thrd2(void *p1, void *p2, void *p3)
+{
+	ARG_UNUSED(p1);
+	ARG_UNUSED(p2);
+	ARG_UNUSED(p3);
+
+	char **dirs;
+	int x;
+
+//	/* TODO: Read domid, then /local/domain/$domid */
+	char *pre = "domid", buf[50];
+	char *domid = xs_read(XBT_NIL, pre, NULL);
+
+//	if (msg) {
+//		printk("Error in xenbus read: %s\n", msg);
+//		k_free(msg);
+//		return;
 //	}
+	if (!domid) {
+		printk("NULL domid\n");
+		return;
+	}
+
+	printk("%s: FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFffdomid returned = %s\n", __func__, domid);
+
+	snprintf(buf, 50, "/local/domain/%s", domid);
+	printk("%s: running xenbus ls for %s\n", __func__, buf);
+	dirs = xs_ls(XBT_NIL, buf);
+//	if (msg) {
+//		printk("Error in xenbus ls: %s\n", msg);
+//		k_free(msg);
+//		return;
+//	}
+
+	printk("xenbus_ls test results for pre = %s\n", buf);
+	for (x = 0; dirs[x]; x++)
+	{
+		printk("ls %s[%d] -> %s\n", buf, x, dirs[x]);
+		//k_free(dirs[x]);
+	}
 //	k_free(dirs);
 }
 
@@ -696,6 +944,17 @@ static int xenbus_init(const struct device *dev)
 	}
 	k_thread_name_set(read_tid, "read_thread");
 	printk("%s: read thread inited, stack defined at %p\n", __func__, read_thrd_stack);
+
+	read_tid2 = k_thread_create(&read_thrd2, read_thrd2_stack,
+			K_KERNEL_STACK_SIZEOF(read_thrd2_stack),
+			xenbus_read_thrd2, NULL, NULL, NULL, 6, 0, K_NO_WAIT);
+	if (read_tid2) {
+		k_thread_name_set(read_tid2, "read_thread2");
+		printk("%s: read thread 2 inited, stack defined at %p\n", __func__, read_thrd2_stack);
+	} else {
+		printk("%s: Failed to create read thread 2\n", __func__);
+	}
+
 
 	return ret;
 }

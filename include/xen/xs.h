@@ -70,12 +70,28 @@ struct xs_request_pool {
 	sys_slist_t queued;
 
 	/* Map size is power of 2 */
-#define XS_REQ_POOL_SHIFT  5
-#define XS_REQ_POOL_SIZE   (1 << XS_REQ_POOL_SHIFT)
-#define XS_REQ_POOL_MASK   (XS_REQ_POOL_SIZE - 1)
-	unsigned long entries_bm[BITS_TO_LONGS(XS_REQ_POOL_SIZE)];
+#define XS_REQ_POOL_SHIFT	5
+#define XS_REQ_POOL_SIZE	(1 << XS_REQ_POOL_SHIFT)
+#define XS_REQ_POOL_MASK	(XS_REQ_POOL_SIZE - 1)
+#define XS_REQ_BM_SIZE		BITS_TO_LONGS(XS_REQ_POOL_SIZE)
+
+	unsigned long entries_bm[XS_REQ_BM_SIZE];
 	/**< Entries */
 	struct xs_request entries[XS_REQ_POOL_SIZE];
+};
+
+/*
+ * Xenbus watch
+ */
+struct xenbus_watch {
+	/**< in use internally */
+	sys_snode_t node;
+	/**< Lock */
+	struct k_spinlock lock;
+	/**< Number of pending events */
+	int pending_events;
+	/**< Watch waiting queue */
+	struct k_sem sem;
 };
 
 #endif /* __XEN_XENBUS_H__ */
