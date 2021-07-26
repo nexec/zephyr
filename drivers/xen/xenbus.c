@@ -4,15 +4,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-//#include <xen/xen.h>
-//#include <xen/hvm/hvm_op.h>
-//#include <xen/hvm/params.h>
-//#include <xen/memory.h>
-//#include <xen/version.h>
-//#include <xen/io/console.h>
-//#include <xen/io/xs_wire.h>
-//#include <xen/io/xenbus.h>
-
 #include <xen/events.h>
 #include <xen/generic.h>
 #include <xen/hvm.h>
@@ -20,7 +11,7 @@
 #include <xen/public/io/xs_wire.h>
 #include <xen/public/xen.h>
 #include <xen/xs.h>
-#include "xenbus/xs_watch.h"
+#include <xen/xs_watch.h>
 
 #include <string.h>
 #include <stdio.h>
@@ -31,7 +22,6 @@
 #include <logging/log.h>
 #include <kernel/thread.h>
 #include <sys/slist.h>
-#include <wait_q.h>
 
 LOG_MODULE_REGISTER(xenstore);
 
@@ -67,7 +57,7 @@ static struct xs_request_pool xs_req_pool;
 static sys_slist_t watch_list;
 
 
-
+/* TODO: Fix memory allocation, test with ASSERT on! */
 
 static void xs_bitmap_init(struct xs_request_pool *pool)
 {
@@ -439,7 +429,7 @@ static int reply_to_errno(const char *reply)
 	}
 
 	LOG_WRN("Unknown Xenstore error: %s\n", reply);
-	err = EINVAL;
+	err = -EINVAL;
 
 out:
 	return err;
@@ -486,7 +476,7 @@ static void process_reply(struct xsd_sockmsg *hdr, char *payload)
 
 
 
-
+/* TODO: check what is going on here, substitute with safe functions if possible */
 static int xs_watch_info_equal(const struct xs_watch_info *xswi,
 	const char *path, const char *token)
 {
@@ -512,6 +502,7 @@ struct xs_watch *xs_watch_create(const char *path)
 	xsw->base.pending_events = 0;
 	k_sem_init(&xsw->base.sem, 0, 1);
 
+	/* TODO: check what is going on here, substitute with safe functions if possible */
 	/* set path */
 	tmpstr = (char *) (xsw + 1);
 	strcpy(tmpstr, path);
@@ -540,7 +531,9 @@ int xs_watch_destroy(struct xs_watch *watch)
 		xsw = CONTAINER_OF(xbw, struct xs_watch, base);
 
 		if (xsw == watch) {
-			sys_slist_remove(&watch_list, &prev->node, &xbw->node);
+			sys_slist_remove(&watch_list,
+					(prev ? &prev->node : NULL),
+					&xbw->node);
 			k_free(xsw);
 			err = 0;
 			break;
@@ -680,7 +673,6 @@ static void xs_recv(void)
 static void xenbus_isr(void *data)
 {
 	struct xs_handler *xs = data;
-	//printk("%s: received event!\n", __func__);
 	k_sem_give(&xs->sem);
 }
 
@@ -706,43 +698,35 @@ static void xenbus_main_thrd(void *p1, void *p2, void *p3)
 	}
 }
 
+/* TODO: move in to header and rename */
 /* Helper macros for initializing xs requests from strings */
 #define XS_IOVEC_STR_NULL(str) \
 	((struct xs_iovec) { str, strlen(str) + 1 })
 #define XS_IOVEC_STR(str) \
 	((struct xs_iovec) { str, strlen(str) })
 
-char *xs_read(xenbus_transaction_t xbt, const char *path, const char *node)
+/* TODO: fix error handling */
+char *xs_read(xenbus_transaction_t xbt, const char *path)
 {
 	struct xs_iovec req, rep;
-	char *fullpath, *value = NULL;
+	char *value = NULL;
 	int err;
 
 	if (path == NULL)
 		return NULL;
 
-//	if (node != NULL) {
-//		err = asprintf(&fullpath, "%s/%s", path, node);
-//		if (err < 0) {
-//			value = ERR2PTR(-ENOMEM);
-//			goto out;
-//		}
-//	} else
-	fullpath = (char *) path;
 
-	req = XS_IOVEC_STR_NULL(fullpath);
+	req = XS_IOVEC_STR_NULL(path);
 	err = xs_msg_reply(XS_READ, xbt, &req, 1, &rep);
 	if (err == 0)
 		value = rep.data;
 	else
 		printk("%s: err = %d!\n", __func__, err);
 
-//	if (node != NULL)
-//		k_free(fullpath);
-//out:
 	return value;
 }
 
+/* TODO: fix error handling */
 /* Returns an array of strings out of the serialized reply */
 static char **reply_to_string_array(struct xs_iovec *rep, int *size)
 {
@@ -810,15 +794,9 @@ static void xenbus_read_thrd(void *p1, void *p2, void *p3)
 	char **dirs;
 	int x;
 
-//	/* TODO: Read domid, then /local/domain/$domid */
 	char *pre = "domid", buf[50];
-	char *domid = xs_read(XBT_NIL, pre, NULL);
+	char *domid = xs_read(XBT_NIL, pre);
 
-//	if (msg) {
-//		printk("Error in xenbus read: %s\n", msg);
-//		k_free(msg);
-//		return;
-//	}
 	if (!domid) {
 		printk("NULL domid\n");
 		return;
@@ -829,12 +807,8 @@ static void xenbus_read_thrd(void *p1, void *p2, void *p3)
 	snprintf(buf, 50, "/local/domain/%s", domid);
 	printk("%s: running xenbus ls for %s\n", __func__, buf);
 	dirs = xs_ls(XBT_NIL, buf);
-//	if (msg) {
-//		printk("Error in xenbus ls: %s\n", msg);
-//		k_free(msg);
-//		return;
-//	}
 
+	/* TODO: check what is wrong with k_free() and who allocates memory for dirs */
 	printk("xenbus_ls test results for pre = %s\n", buf);
 	for (x = 0; dirs[x]; x++)
 	{
@@ -854,31 +828,21 @@ static void xenbus_read_thrd2(void *p1, void *p2, void *p3)
 	char **dirs;
 	int x;
 
-//	/* TODO: Read domid, then /local/domain/$domid */
 	char *pre = "domid", buf[50];
-	char *domid = xs_read(XBT_NIL, pre, NULL);
+	char *domid = xs_read(XBT_NIL, pre);
 
-//	if (msg) {
-//		printk("Error in xenbus read: %s\n", msg);
-//		k_free(msg);
-//		return;
-//	}
 	if (!domid) {
 		printk("NULL domid\n");
 		return;
 	}
 
-	printk("%s: FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFffdomid returned = %s\n", __func__, domid);
+	printk("%s: second domid returned = %s\n", __func__, domid);
 
 	snprintf(buf, 50, "/local/domain/%s", domid);
 	printk("%s: running xenbus ls for %s\n", __func__, buf);
 	dirs = xs_ls(XBT_NIL, buf);
-//	if (msg) {
-//		printk("Error in xenbus ls: %s\n", msg);
-//		k_free(msg);
-//		return;
-//	}
 
+	/* TODO: check what is wrong with k_free() and who allocates memory for dirs */
 	printk("xenbus_ls test results for pre = %s\n", buf);
 	for (x = 0; dirs[x]; x++)
 	{
