@@ -34,13 +34,67 @@
 #define __XS_COMMS_H__
 
 #include <xen/public/io/xs_wire.h>
+#include <xen/xenbus/xenbus.h>
 
-typedef uint64_t xenbus_transaction_t;
-#define XBT_NIL ((xenbus_transaction_t) 0)
+int xs_comms_init(void);
+
 
 struct xs_iovec {
 	void *data;
 	unsigned int len;
+};
+
+/*
+ * In-flight request structure.
+ */
+struct xs_request {
+	/**< used when queueing requests */
+	sys_snode_t next;
+	/**< Waiting queue for incoming reply notification */
+	struct k_sem sem;
+	/**< Request header */
+	struct xsd_sockmsg hdr;
+	/**< Request payload iovecs */
+	const struct xs_iovec *payload_iovecs;
+	/**< Received reply */
+	struct {
+		/**< Reply string + size */
+		struct xs_iovec iovec;
+		/**< Error number */
+		int errornum;
+		/**< Non-zero for incoming replies */
+		int recvd;
+	} reply;
+};
+
+/* Round up and count number of longs */
+#define BITS_TO_LONGS(size) (BITS_PER_LONG - 1 + size)/(BITS_PER_LONG)
+
+/*
+ * Pool of in-flight requests.
+ * Request IDs are reused, hence the limited set of entries.
+ */
+struct xs_request_pool {
+	/**< Number of live requests */
+	uint32_t num_live;
+	/**< Last probed request index */
+	uint32_t last_probed;
+	/**< Lock */
+	struct k_spinlock lock;
+	/**< Waiting queue for 'not-full' notifications */
+	struct k_sem sem;
+	/**< Queue for requests to be sent */
+	sys_slist_t queued;
+
+	/* Map size is power of 2 */
+#define XS_REQ_POOL_SHIFT	5
+#define XS_REQ_POOL_SIZE	(1 << XS_REQ_POOL_SHIFT)
+#define XS_REQ_POOL_MASK	(XS_REQ_POOL_SIZE - 1)
+#define XS_REQ_BM_SIZE		BITS_TO_LONGS(XS_REQ_POOL_SIZE)
+
+	unsigned long entries_bm[XS_REQ_BM_SIZE];
+	/**< Entries */
+	struct xs_request entries[XS_REQ_POOL_SIZE];
 };
 
 /*

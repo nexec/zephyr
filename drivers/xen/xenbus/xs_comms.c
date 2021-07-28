@@ -4,14 +4,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/* TODO: re-check all headers */
+
 #include <xen/events.h>
 #include <xen/generic.h>
 #include <xen/hvm.h>
 #include <xen/public/hvm/params.h>
 #include <xen/public/io/xs_wire.h>
 #include <xen/public/xen.h>
-#include <xen/xs.h>
-#include <xen/xs_watch.h>
+#include <xen/xenbus/xenbus.h>
+#include <xen/xenbus/xs.h>
+#include <xen/xenbus/xs_watch.h>
 
 #include <string.h>
 #include <stdio.h>
@@ -23,39 +26,10 @@
 #include <kernel/thread.h>
 #include <sys/slist.h>
 
-LOG_MODULE_REGISTER(xenstore);
+LOG_MODULE_DECLARE(xenbus);
 
-K_KERNEL_STACK_DEFINE(xenstore_thrd_stack, 1024);
-struct k_thread xenstore_thrd;
-k_tid_t xenstore_tid;
-
-K_KERNEL_STACK_DEFINE(read_thrd_stack, 1024);
-struct k_thread read_thrd;
-k_tid_t read_tid;
-
-K_KERNEL_STACK_DEFINE(read_thrd2_stack, 1024);
-struct k_thread read_thrd2;
-k_tid_t read_tid2;
-
-#define DEBUG_XENBUS
-
-#ifdef DEBUG_XENBUS
-#define xenbus_printk printk
-#else
-static void xenbus_printk(const char *fmt, ...) {};
-#endif
-
-static struct xs_handler xs_hdlr;
-
-/* TODO:REMOVE IT! */
-#define xsh xs_hdlr
-
-
-
-static struct xs_request_pool xs_req_pool;
-
-static sys_slist_t watch_list;
-
+struct xs_request_pool xs_req_pool;
+extern struct xs_handler xs_hdlr;
 
 /* TODO: Fix memory allocation, test with ASSERT on! */
 
@@ -76,7 +50,7 @@ static void xs_bitmap_init(struct xs_request_pool *pool)
 	}
 }
 
-static void xs_request_pool_init(struct xs_request_pool *pool)
+void xs_request_pool_init(struct xs_request_pool *pool)
 {
 	struct xs_request *xs_req;
 	int i;
@@ -238,24 +212,24 @@ static struct xs_request *xs_request_dequeue(void)
 
 static int xs_avail_to_read(void)
 {
-	return (xsh.buf->rsp_prod != xsh.buf->rsp_cons);
+	return (xs_hdlr.buf->rsp_prod != xs_hdlr.buf->rsp_cons);
 }
 
 static int xs_avail_space_for_read(unsigned int size)
 {
-	return (xsh.buf->rsp_prod - xsh.buf->rsp_cons >= size);
+	return (xs_hdlr.buf->rsp_prod - xs_hdlr.buf->rsp_cons >= size);
 }
 
 static int xs_avail_to_write(void)
 {
 	xenbus_printk("%s: is empty = %d\n", __func__, sys_slist_is_empty(&xs_req_pool.queued));
-	return (xsh.buf->req_prod - xsh.buf->req_cons != XENSTORE_RING_SIZE &&
+	return (xs_hdlr.buf->req_prod - xs_hdlr.buf->req_cons != XENSTORE_RING_SIZE &&
 		!sys_slist_is_empty(&xs_req_pool.queued));
 }
 
 static int xs_avail_space_for_write(unsigned int size)
 {
-	return (xsh.buf->req_prod - xsh.buf->req_cons +
+	return (xs_hdlr.buf->req_prod - xs_hdlr.buf->req_cons +
 		size <= XENSTORE_RING_SIZE);
 }
 
@@ -300,7 +274,7 @@ static int xs_msg_write(struct xsd_sockmsg *xsd_req,
 	/* The batched iovecs are preceded by a single header. */
 	crnt_iovec = &hdr_iovec;
 
-	prod = xsh.buf->req_prod;
+	prod = xs_hdlr.buf->req_prod;
 	req_off = 0;
 	buf_off = 0;
 	while (req_off < req_size) {
@@ -308,7 +282,7 @@ static int xs_msg_write(struct xsd_sockmsg *xsd_req,
 			XENSTORE_RING_SIZE - MASK_XENSTORE_IDX(prod));
 
 		memcpy(
-			(char *) xsh.buf->req + MASK_XENSTORE_IDX(prod),
+			(char *) xs_hdlr.buf->req + MASK_XENSTORE_IDX(prod),
 			(char *) crnt_iovec->data + buf_off,
 			this_chunk_len
 		);
@@ -330,15 +304,15 @@ static int xs_msg_write(struct xsd_sockmsg *xsd_req,
 	LOG_ERR("Complete main loop of %s.\n", __func__);
 	__ASSERT_NO_MSG(buf_off == 0);
 	__ASSERT_NO_MSG(req_off == req_size);
-	__ASSERT_NO_MSG(prod <= xsh.buf->req_cons + XENSTORE_RING_SIZE);
+	__ASSERT_NO_MSG(prod <= xs_hdlr.buf->req_cons + XENSTORE_RING_SIZE);
 
 	/* Remote must see entire message before updating indexes */
 	compiler_barrier();
 
-	xsh.buf->req_prod += req_size;
+	xs_hdlr.buf->req_prod += req_size;
 
 	/* Send evtchn to notify remote */
-	notify_evtchn(xsh.evtchn);
+	notify_evtchn(xs_hdlr.evtchn);
 
 	return 0;
 }
@@ -367,7 +341,7 @@ int xs_msg_reply(enum xsd_sockmsg_type msg_type, xenbus_transaction_t xbt,
 	/* enqueue the request */
 	xs_request_enqueue(xs_req);
 	/* wake xenstore thread to send it */
-	k_sem_give(&xsh.sem);
+	k_sem_give(&xs_hdlr.sem);
 
 	/* wait reply */
 	while (1) {
@@ -435,6 +409,25 @@ out:
 	return err;
 }
 
+/* Process an incoming xs watch event */
+void process_watch_event(char *watch_msg)
+{
+	struct xs_watch *watch;
+	char *path, *token;
+
+	path  = watch_msg;
+	token = watch_msg + strlen(path) + 1;
+
+	watch = xs_watch_find(path, token);
+	k_free(watch_msg);
+
+	/* TODO: Fix it when client.c will be ported */
+//	if (watch)
+//		xenbus_watch_notify_event(&watch->base);
+//	else
+//		LOG_ERR("Invalid watch event.");
+}
+
 /* Process an incoming xs reply */
 static void process_reply(struct xsd_sockmsg *hdr, char *payload)
 {
@@ -471,119 +464,6 @@ static void process_reply(struct xsd_sockmsg *hdr, char *payload)
 }
 
 
-
-
-
-
-
-/* TODO: check what is going on here, substitute with safe functions if possible */
-static int xs_watch_info_equal(const struct xs_watch_info *xswi,
-	const char *path, const char *token)
-{
-	return (strcmp(xswi->path, path) == 0 &&
-		strcmp(xswi->token, token) == 0);
-}
-
-struct xs_watch *xs_watch_create(const char *path)
-{
-	struct xs_watch *xsw;
-	const int token_size = sizeof(xsw) * 2 + 1;
-	char *tmpstr;
-	int stringlen;
-
-	__ASSERT_NO_MSG(path != NULL);
-
-	stringlen = token_size + strlen(path) + 1;
-
-	xsw = k_malloc(sizeof(*xsw) + stringlen);
-	if (!xsw)
-		return NULL;
-
-	xsw->base.pending_events = 0;
-	k_sem_init(&xsw->base.sem, 0, 1);
-
-	/* TODO: check what is going on here, substitute with safe functions if possible */
-	/* set path */
-	tmpstr = (char *) (xsw + 1);
-	strcpy(tmpstr, path);
-	xsw->xs.path = tmpstr;
-
-	/* set token (watch address as string) */
-	tmpstr += strlen(path) + 1;
-	sprintf(tmpstr, "%lx", (long) xsw);
-	xsw->xs.token = tmpstr;
-
-	sys_slist_prepend(&watch_list, &xsw->base.node);
-
-	return xsw;
-}
-
-int xs_watch_destroy(struct xs_watch *watch)
-{
-	struct xenbus_watch *xbw;
-	struct xenbus_watch *prev = NULL;
-	struct xs_watch *xsw;
-	int err = -ENOENT;
-
-	__ASSERT_NO_MSG(watch != NULL);
-
-	SYS_SLIST_FOR_EACH_CONTAINER(&watch_list, xbw, node) {
-		xsw = CONTAINER_OF(xbw, struct xs_watch, base);
-
-		if (xsw == watch) {
-			sys_slist_remove(&watch_list,
-					(prev ? &prev->node : NULL),
-					&xbw->node);
-			k_free(xsw);
-			err = 0;
-			break;
-		}
-
-		/*
-		 * Needed to optimize removal process in single-linked list
-		 * (to not use sys_slist_find_and_remove()). Can be NULL
-		 * if xbw is a list head.
-		 */
-		prev = xbw;
-	}
-
-	return err;
-}
-
-struct xs_watch *xs_watch_find(const char *path, const char *token)
-{
-	struct xenbus_watch *xbw;
-	struct xs_watch *xsw;
-
-	SYS_SLIST_FOR_EACH_CONTAINER(&watch_list, xbw, node) {
-		xsw = CONTAINER_OF(xbw, struct xs_watch, base);
-
-		if (xs_watch_info_equal(&xsw->xs, path, token))
-			return xsw;
-	}
-
-	return NULL;
-}
-
-/* Process an incoming xs watch event */
-static void process_watch_event(char *watch_msg)
-{
-	struct xs_watch *watch;
-	char *path, *token;
-
-	path  = watch_msg;
-	token = watch_msg + strlen(path) + 1;
-
-	watch = xs_watch_find(path, token);
-	k_free(watch_msg);
-
-	/* TODO: Fix it when client.c will be ported */
-//	if (watch)
-//		xenbus_watch_notify_event(&watch->base);
-//	else
-//		LOG_ERR("Invalid watch event.");
-}
-
 static void memcpy_from_ring(const char *ring, char *dest, int off, int len)
 {
 	int c1, c2;
@@ -607,11 +487,11 @@ static void xs_msg_read(struct xsd_sockmsg *hdr)
 		return;
 	}
 
-	cons = xsh.buf->rsp_cons;
+	cons = xs_hdlr.buf->rsp_cons;
 
 	/* copy payload */
 	memcpy_from_ring(
-		xsh.buf->rsp,
+		xs_hdlr.buf->rsp,
 		payload,
 		MASK_XENSTORE_IDX(cons + sizeof(*hdr)),
 		hdr->len
@@ -620,10 +500,10 @@ static void xs_msg_read(struct xsd_sockmsg *hdr)
 
 	/* Remote must not see available space until we've copied the reply */
 	compiler_barrier();
-	xsh.buf->rsp_cons += sizeof(*hdr) + hdr->len;
+	xs_hdlr.buf->rsp_cons += sizeof(*hdr) + hdr->len;
 
-	if (xsh.buf->rsp_prod - cons >= XENSTORE_RING_SIZE)
-		notify_evtchn(xsh.evtchn);
+	if (xs_hdlr.buf->rsp_prod - cons >= XENSTORE_RING_SIZE)
+		notify_evtchn(xs_hdlr.evtchn);
 
 	if (hdr->type == XS_WATCH_EVENT)
 		process_watch_event(payload);
@@ -638,7 +518,7 @@ static void xs_recv(void)
 
 	while (1) {
 		LOG_DBG("Rsp_cons %d, rsp_prod %d.\n",
-			    xsh.buf->rsp_cons, xsh.buf->rsp_prod);
+			    xs_hdlr.buf->rsp_cons, xs_hdlr.buf->rsp_prod);
 
 		if (!xs_avail_space_for_read(sizeof(msg)))
 			break;
@@ -648,15 +528,15 @@ static void xs_recv(void)
 
 		/* copy the message header */
 		memcpy_from_ring(
-			xsh.buf->rsp,
+			xs_hdlr.buf->rsp,
 			(char *) &msg,
-			MASK_XENSTORE_IDX(xsh.buf->rsp_cons),
+			MASK_XENSTORE_IDX(xs_hdlr.buf->rsp_cons),
 			sizeof(msg)
 		);
 
 		LOG_DBG("Msg len %lu, %u avail, id %u.\n",
 			    msg.len + sizeof(msg),
-			    xsh.buf->rsp_prod - xsh.buf->rsp_cons,
+			    xs_hdlr.buf->rsp_prod - xs_hdlr.buf->rsp_cons,
 			    msg.req_id);
 
 		if (!xs_avail_space_for_read(sizeof(msg) + msg.len))
@@ -670,13 +550,8 @@ static void xs_recv(void)
 	}
 }
 
-static void xenbus_isr(void *data)
-{
-	struct xs_handler *xs = data;
-	k_sem_give(&xs->sem);
-}
 
-static void xenbus_main_thrd(void *p1, void *p2, void *p3)
+void xenbus_main_thrd(void *p1, void *p2, void *p3)
 {
 	while (1) {
 		xenbus_printk("%s: taking semaphore\n", __func__);
@@ -698,234 +573,8 @@ static void xenbus_main_thrd(void *p1, void *p2, void *p3)
 	}
 }
 
-/* TODO: move in to header and rename */
-/* Helper macros for initializing xs requests from strings */
-#define XS_IOVEC_STR_NULL(str) \
-	((struct xs_iovec) { str, strlen(str) + 1 })
-#define XS_IOVEC_STR(str) \
-	((struct xs_iovec) { str, strlen(str) })
-
-/* TODO: fix error handling */
-char *xs_read(xenbus_transaction_t xbt, const char *path)
-{
-	struct xs_iovec req, rep;
-	char *value = NULL;
-	int err;
-
-	if (path == NULL)
-		return NULL;
-
-
-	req = XS_IOVEC_STR_NULL(path);
-	err = xs_msg_reply(XS_READ, xbt, &req, 1, &rep);
-	if (err == 0)
-		value = rep.data;
-	else
-		printk("%s: err = %d!\n", __func__, err);
-
-	return value;
-}
-
-/* TODO: fix error handling */
-/* Returns an array of strings out of the serialized reply */
-static char **reply_to_string_array(struct xs_iovec *rep, int *size)
-{
-	int strings_num, offs, i;
-	char *rep_strings, *strings, **res = NULL;
-
-	rep_strings = rep->data;
-
-	/* count the strings */
-	for (offs = strings_num = 0; offs < (int) rep->len; offs++)
-		strings_num += (rep_strings[offs] == 0);
-
-	/* one alloc for both string addresses and contents */
-	res = k_malloc((strings_num + 1) * sizeof(char *) + rep->len);
-//	if (!res)
-//		return ERR2PTR(-ENOMEM);
-
-	/* copy the strings to the end of the array */
-	strings = (char *) &res[strings_num + 1];
-	memcpy(strings, rep_strings, rep->len);
-
-	/* fill the string array */
-	for (offs = i = 0; i < strings_num; i++) {
-		char *string = strings + offs;
-		int string_len = strlen(string);
-
-		res[i] = string;
-
-		offs += string_len + 1;
-	}
-	res[i] = NULL;
-
-	if (size)
-		*size = strings_num;
-
-	return res;
-}
-
-char **xs_ls(xenbus_transaction_t xbt, const char *path)
-{
-	struct xs_iovec req, rep;
-	char **res = NULL;
-	int err;
-
-	if (path == NULL)
-		return NULL;
-
-	req = XS_IOVEC_STR_NULL((char *) path);
-	err = xs_msg_reply(XS_DIRECTORY, xbt, &req, 1, &rep);
-	if (err)
-		return NULL;
-
-	res = reply_to_string_array(&rep, NULL);
-	k_free(rep.data);
-
-	return res;
-}
-
-static void xenbus_read_thrd(void *p1, void *p2, void *p3)
-{
-	ARG_UNUSED(p1);
-	ARG_UNUSED(p2);
-	ARG_UNUSED(p3);
-
-	char **dirs;
-	int x;
-
-	char *pre = "domid", buf[50];
-	char *domid = xs_read(XBT_NIL, pre);
-
-	if (!domid) {
-		printk("NULL domid\n");
-		return;
-	}
-
-	printk("%s: domid returned = %s\n", __func__, domid);
-
-	snprintf(buf, 50, "/local/domain/%s", domid);
-	printk("%s: running xenbus ls for %s\n", __func__, buf);
-	dirs = xs_ls(XBT_NIL, buf);
-
-	/* TODO: check what is wrong with k_free() and who allocates memory for dirs */
-	printk("xenbus_ls test results for pre = %s\n", buf);
-	for (x = 0; dirs[x]; x++)
-	{
-		printk("ls %s[%d] -> %s\n", buf, x, dirs[x]);
-		//k_free(dirs[x]);
-	}
-//	k_free(dirs);
-}
-
-
-static void xenbus_read_thrd2(void *p1, void *p2, void *p3)
-{
-	ARG_UNUSED(p1);
-	ARG_UNUSED(p2);
-	ARG_UNUSED(p3);
-
-	char **dirs;
-	int x;
-
-	char *pre = "domid", buf[50];
-	char *domid = xs_read(XBT_NIL, pre);
-
-	if (!domid) {
-		printk("NULL domid\n");
-		return;
-	}
-
-	printk("%s: second domid returned = %s\n", __func__, domid);
-
-	snprintf(buf, 50, "/local/domain/%s", domid);
-	printk("%s: running xenbus ls for %s\n", __func__, buf);
-	dirs = xs_ls(XBT_NIL, buf);
-
-	/* TODO: check what is wrong with k_free() and who allocates memory for dirs */
-	printk("xenbus_ls test results for pre = %s\n", buf);
-	for (x = 0; dirs[x]; x++)
-	{
-		printk("ls %s[%d] -> %s\n", buf, x, dirs[x]);
-		//k_free(dirs[x]);
-	}
-//	k_free(dirs);
-}
-
-static int xenbus_init(const struct device *dev)
-{
-	ARG_UNUSED(dev);
-	int ret = 0;
-	uint64_t xs_pfn = 0, xs_evtchn = 0;
-	uintptr_t xs_addr = 0;
-	struct xs_handler *data = dev->data;
-
-	data->dev = dev;
-
-	ret = hvm_get_parameter(HVM_PARAM_STORE_EVTCHN, &xs_evtchn);
-	if (ret) {
-		printk("%s: failed to get Xenbus evtchn, ret = %d\n",
-				__func__, ret);
-		return ret;
-	}
-	data->evtchn = (evtchn_port_t) xs_evtchn;
-
-	ret = hvm_get_parameter(HVM_PARAM_STORE_PFN, &xs_pfn);
-	if (ret) {
-		printk("%s: failed to get Xenbus PFN, ret = %d\n",
-				__func__, ret);
-		return ret;
-	}
-
-	xs_addr = (uintptr_t) (xs_pfn << XEN_PAGE_SHIFT);
-	device_map(DEVICE_MMIO_RAM_PTR(dev), xs_addr, XEN_PAGE_SIZE,
-		K_MEM_CACHE_WB);
-	data->buf = (struct xenstore_domain_interface *) DEVICE_MMIO_GET(dev);
-
-	k_sem_init(&data->sem, 0, 1);
-
+int xs_comms_init(void) {
 	xs_request_pool_init(&xs_req_pool);
 
-	bind_event_channel(data->evtchn, xenbus_isr, data);
-
-	data->thread = k_thread_create(&xenstore_thrd, xenstore_thrd_stack,
-			K_KERNEL_STACK_SIZEOF(xenstore_thrd_stack),
-			xenbus_main_thrd, NULL, NULL, NULL, 7, 0, K_NO_WAIT);
-	if (!data->thread) {
-		printk("%s: Failed to create Xenstore thread\n", __func__);
-		return -1;
-	}
-	k_thread_name_set(data->thread, "xenstore_thread");
-	printk("%s: xenstore thread inited\n", __func__);
-
-	read_tid = k_thread_create(&read_thrd, read_thrd_stack,
-			K_KERNEL_STACK_SIZEOF(read_thrd_stack),
-			xenbus_read_thrd, NULL, NULL, NULL, 7, 0, K_NO_WAIT);
-	if (!read_tid) {
-		printk("%s: Failed to create read thread\n", __func__);
-		k_thread_abort(xenstore_tid);
-		return -1;
-	}
-	k_thread_name_set(read_tid, "read_thread");
-	printk("%s: read thread inited, stack defined at %p\n", __func__, read_thrd_stack);
-
-	read_tid2 = k_thread_create(&read_thrd2, read_thrd2_stack,
-			K_KERNEL_STACK_SIZEOF(read_thrd2_stack),
-			xenbus_read_thrd2, NULL, NULL, NULL, 6, 0, K_NO_WAIT);
-	if (read_tid2) {
-		k_thread_name_set(read_tid2, "read_thread2");
-		printk("%s: read thread 2 inited, stack defined at %p\n", __func__, read_thrd2_stack);
-	} else {
-		printk("%s: Failed to create read thread 2\n", __func__);
-	}
-
-
-	return ret;
+	return 0;
 }
-
-/*
- * Xenbus logic requires threads, so it should be inited when their creation
- * will be possible (POST_KERNEL)
- */
-DEVICE_DEFINE(xenbus, "xenbus", xenbus_init, NULL, &xs_hdlr, NULL,
-		POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, NULL);
