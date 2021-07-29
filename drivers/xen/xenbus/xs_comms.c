@@ -147,7 +147,7 @@ static void xs_request_put(struct xs_request *xs_req)
 			reqid, xs_req);
 	key = k_spin_lock(&xs_req_pool.lock);
 
-	__ASSERT(sys_test_bit((mem_addr_t) xs_req_pool.entries_bm, reqid) == 1,
+	__ASSERT(sys_test_bit((mem_addr_t) xs_req_pool.entries_bm, reqid) != 1,
 			"trying to put free request!");
 
 	sys_bitfield_set_bit((mem_addr_t) xs_req_pool.entries_bm, reqid);

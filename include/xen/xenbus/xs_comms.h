@@ -37,7 +37,7 @@
 #include <xen/xenbus/xenbus.h>
 
 int xs_comms_init(void);
-
+void xenbus_main_thrd(void *p1, void *p2, void *p3);
 
 struct xs_iovec {
 	void *data;
