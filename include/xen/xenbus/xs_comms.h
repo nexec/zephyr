@@ -36,7 +36,7 @@
 #include <xen/public/io/xs_wire.h>
 #include <xen/xenbus/xenbus.h>
 
-int xs_comms_init(void);
+int xs_comms_init(struct xs_handler *hdlr);
 void xenbus_main_thrd(void *p1, void *p2, void *p3);
 
 struct xs_iovec {

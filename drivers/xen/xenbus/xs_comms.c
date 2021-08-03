@@ -12,6 +12,7 @@
 #include <xen/public/hvm/params.h>
 #include <xen/public/io/xs_wire.h>
 #include <xen/public/xen.h>
+#include <xen/xenbus/client.h>
 #include <xen/xenbus/xenbus.h>
 #include <xen/xenbus/xs.h>
 #include <xen/xenbus/xs_watch.h>
@@ -28,8 +29,8 @@
 
 LOG_MODULE_DECLARE(xenbus);
 
-struct xs_request_pool xs_req_pool;
-extern struct xs_handler xs_hdlr;
+static struct xs_request_pool xs_req_pool;
+static struct xs_handler *xs_hdlr;
 
 /* TODO: Fix memory allocation, test with ASSERT on! */
 
@@ -212,24 +213,24 @@ static struct xs_request *xs_request_dequeue(void)
 
 static int xs_avail_to_read(void)
 {
-	return (xs_hdlr.buf->rsp_prod != xs_hdlr.buf->rsp_cons);
+	return (xs_hdlr->buf->rsp_prod != xs_hdlr->buf->rsp_cons);
 }
 
 static int xs_avail_space_for_read(unsigned int size)
 {
-	return (xs_hdlr.buf->rsp_prod - xs_hdlr.buf->rsp_cons >= size);
+	return (xs_hdlr->buf->rsp_prod - xs_hdlr->buf->rsp_cons >= size);
 }
 
 static int xs_avail_to_write(void)
 {
 	xenbus_printk("%s: is empty = %d\n", __func__, sys_slist_is_empty(&xs_req_pool.queued));
-	return (xs_hdlr.buf->req_prod - xs_hdlr.buf->req_cons != XENSTORE_RING_SIZE &&
+	return (xs_hdlr->buf->req_prod - xs_hdlr->buf->req_cons != XENSTORE_RING_SIZE &&
 		!sys_slist_is_empty(&xs_req_pool.queued));
 }
 
 static int xs_avail_space_for_write(unsigned int size)
 {
-	return (xs_hdlr.buf->req_prod - xs_hdlr.buf->req_cons +
+	return (xs_hdlr->buf->req_prod - xs_hdlr->buf->req_cons +
 		size <= XENSTORE_RING_SIZE);
 }
 
@@ -274,7 +275,7 @@ static int xs_msg_write(struct xsd_sockmsg *xsd_req,
 	/* The batched iovecs are preceded by a single header. */
 	crnt_iovec = &hdr_iovec;
 
-	prod = xs_hdlr.buf->req_prod;
+	prod = xs_hdlr->buf->req_prod;
 	req_off = 0;
 	buf_off = 0;
 	while (req_off < req_size) {
@@ -282,7 +283,7 @@ static int xs_msg_write(struct xsd_sockmsg *xsd_req,
 			XENSTORE_RING_SIZE - MASK_XENSTORE_IDX(prod));
 
 		memcpy(
-			(char *) xs_hdlr.buf->req + MASK_XENSTORE_IDX(prod),
+			(char *) xs_hdlr->buf->req + MASK_XENSTORE_IDX(prod),
 			(char *) crnt_iovec->data + buf_off,
 			this_chunk_len
 		);
@@ -304,15 +305,15 @@ static int xs_msg_write(struct xsd_sockmsg *xsd_req,
 	LOG_ERR("Complete main loop of %s.\n", __func__);
 	__ASSERT_NO_MSG(buf_off == 0);
 	__ASSERT_NO_MSG(req_off == req_size);
-	__ASSERT_NO_MSG(prod <= xs_hdlr.buf->req_cons + XENSTORE_RING_SIZE);
+	__ASSERT_NO_MSG(prod <= xs_hdlr->buf->req_cons + XENSTORE_RING_SIZE);
 
 	/* Remote must see entire message before updating indexes */
 	compiler_barrier();
 
-	xs_hdlr.buf->req_prod += req_size;
+	xs_hdlr->buf->req_prod += req_size;
 
 	/* Send evtchn to notify remote */
-	notify_evtchn(xs_hdlr.evtchn);
+	notify_evtchn(xs_hdlr->evtchn);
 
 	return 0;
 }
@@ -341,7 +342,7 @@ int xs_msg_reply(enum xsd_sockmsg_type msg_type, xenbus_transaction_t xbt,
 	/* enqueue the request */
 	xs_request_enqueue(xs_req);
 	/* wake xenstore thread to send it */
-	k_sem_give(&xs_hdlr.sem);
+	k_sem_give(&xs_hdlr->sem);
 
 	/* wait reply */
 	while (1) {
@@ -421,11 +422,10 @@ void process_watch_event(char *watch_msg)
 	watch = xs_watch_find(path, token);
 	k_free(watch_msg);
 
-	/* TODO: Fix it when client.c will be ported */
-//	if (watch)
-//		xenbus_watch_notify_event(&watch->base);
-//	else
-//		LOG_ERR("Invalid watch event.");
+	if (watch)
+		xenbus_watch_notify_event(&watch->base);
+	else
+		LOG_ERR("Invalid watch event received!");
 }
 
 /* Process an incoming xs reply */
@@ -487,11 +487,11 @@ static void xs_msg_read(struct xsd_sockmsg *hdr)
 		return;
 	}
 
-	cons = xs_hdlr.buf->rsp_cons;
+	cons = xs_hdlr->buf->rsp_cons;
 
 	/* copy payload */
 	memcpy_from_ring(
-		xs_hdlr.buf->rsp,
+		xs_hdlr->buf->rsp,
 		payload,
 		MASK_XENSTORE_IDX(cons + sizeof(*hdr)),
 		hdr->len
@@ -500,10 +500,10 @@ static void xs_msg_read(struct xsd_sockmsg *hdr)
 
 	/* Remote must not see available space until we've copied the reply */
 	compiler_barrier();
-	xs_hdlr.buf->rsp_cons += sizeof(*hdr) + hdr->len;
+	xs_hdlr->buf->rsp_cons += sizeof(*hdr) + hdr->len;
 
-	if (xs_hdlr.buf->rsp_prod - cons >= XENSTORE_RING_SIZE)
-		notify_evtchn(xs_hdlr.evtchn);
+	if (xs_hdlr->buf->rsp_prod - cons >= XENSTORE_RING_SIZE)
+		notify_evtchn(xs_hdlr->evtchn);
 
 	if (hdr->type == XS_WATCH_EVENT)
 		process_watch_event(payload);
@@ -518,7 +518,7 @@ static void xs_recv(void)
 
 	while (1) {
 		LOG_DBG("Rsp_cons %d, rsp_prod %d.\n",
-			    xs_hdlr.buf->rsp_cons, xs_hdlr.buf->rsp_prod);
+			    xs_hdlr->buf->rsp_cons, xs_hdlr->buf->rsp_prod);
 
 		if (!xs_avail_space_for_read(sizeof(msg)))
 			break;
@@ -528,15 +528,15 @@ static void xs_recv(void)
 
 		/* copy the message header */
 		memcpy_from_ring(
-			xs_hdlr.buf->rsp,
+			xs_hdlr->buf->rsp,
 			(char *) &msg,
-			MASK_XENSTORE_IDX(xs_hdlr.buf->rsp_cons),
+			MASK_XENSTORE_IDX(xs_hdlr->buf->rsp_cons),
 			sizeof(msg)
 		);
 
 		LOG_DBG("Msg len %lu, %u avail, id %u.\n",
 			    msg.len + sizeof(msg),
-			    xs_hdlr.buf->rsp_prod - xs_hdlr.buf->rsp_cons,
+			    xs_hdlr->buf->rsp_prod - xs_hdlr->buf->rsp_cons,
 			    msg.req_id);
 
 		if (!xs_avail_space_for_read(sizeof(msg) + msg.len))
@@ -555,7 +555,7 @@ void xenbus_main_thrd(void *p1, void *p2, void *p3)
 {
 	while (1) {
 		xenbus_printk("%s: taking semaphore\n", __func__);
-		k_sem_take(&xs_hdlr.sem, K_FOREVER);
+		k_sem_take(&xs_hdlr->sem, K_FOREVER);
 		if (!xs_avail_work()) {
 			xenbus_printk("%s: took semaphore, queue empty!\n", __func__);
 			continue;
@@ -573,7 +573,8 @@ void xenbus_main_thrd(void *p1, void *p2, void *p3)
 	}
 }
 
-int xs_comms_init(void) {
+int xs_comms_init(struct xs_handler *hdlr) {
+	xs_hdlr = hdlr;
 	xs_request_pool_init(&xs_req_pool);
 
 	return 0;

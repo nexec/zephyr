@@ -34,7 +34,9 @@
 #ifndef __XS_WATCH_H__
 #define __XS_WATCH_H__
 
+#include <xen/xenbus/xenbus.h>
 #include <xen/xenbus/xs.h>
+
 
 /* Xenstore watch info */
 struct xs_watch_info {
@@ -44,19 +46,6 @@ struct xs_watch_info {
 	char *token;
 };
 
-/*
- * Xenbus watch
- */
-struct xenbus_watch {
-	/**< in use internally */
-	sys_snode_t node;
-	/**< Lock */
-	struct k_spinlock lock;
-	/**< Number of pending events */
-	int pending_events;
-	/**< Watch waiting queue */
-	struct k_sem sem;
-};
 
 /* Xenstore watch */
 struct xs_watch {
