@@ -1,17 +1,12 @@
 /*
- * SPDX-License-Identifier: GPL-2.0
+ * Copyright (c) 2021 EPAM Systems
  *
- * (C) 2006, Steven Smith <sos22@cam.ac.uk>
- * (C) 2006, Grzegorz Milos <gm281@cam.ac.uk>
- * (C) 2020, EPAM Systems Inc.
+ * SPDX-License-Identifier: Apache-2.0
  */
-#ifndef __GNTTAB_H__
-#define __GNTTAB_H__
+#ifndef __XEN_GNTTAB_H__
+#define __XEN_GNTTAB_H__
 
 #include <xen/public/grant_table.h>
-
-void init_gnttab(void);
-void fini_gnttab(void);
 
 grant_ref_t gnttab_alloc_and_grant(void **map);
 grant_ref_t gnttab_grant_access(domid_t domid, unsigned long frame,
@@ -20,6 +15,4 @@ grant_ref_t gnttab_grant_transfer(domid_t domid, unsigned long pfn);
 int gnttab_end_access(grant_ref_t ref);
 const char *gnttabop_error(int16_t status);
 
-//void get_gnttab_base(phys_addr_t *gnttab_base, phys_size_t *gnttab_sz);
-
-#endif /* !__GNTTAB_H__ */
+#endif /* __XEN_GNTTAB_H__ */
