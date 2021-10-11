@@ -5,4 +5,4 @@ zephyr_sources(hvm.c)
 zephyr_sources(events.c)
 zephyr_sources(gnttab.c)
 
-add_subdirectory(xenbus)
+#add_subdirectory(xenbus)

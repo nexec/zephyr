@@ -26,7 +26,8 @@
 
 	chosen {
 		zephyr,sram = &ram;
-		zephyr,console = &xen_hvc;
+		zephyr,console = &xen_consoleio_hvc;
+		zephyr,shell-uart = &xen_consoleio_hvc;
 	};
 
 	cpus {
@@ -47,18 +48,18 @@
 		label = "PSCI";
 	};
 
-	ram: memory@40000000 {
+	ram: memory@50000000 {
 		device_type = "mmio-sram";
-		reg = <0x00 0x40000000 0x00 DT_SIZE_M(16)>;
+		reg = <0x00 0x50000000 0x00 DT_SIZE_M(16)>;
 	};
 
-	gic: interrupt-controller@3001000 {
+	gic: interrupt-controller@f1010000 {
 		compatible = "arm,gic";
 		label = "GIC";
 		#interrupt-cells = <0x04>;
 		#address-cells = <0x00>;
 		interrupt-controller;
-		reg = <0x00 0x3001000 0x00 0x1000 0x00 0x3002000 0x00 0x2000>;
+		reg = <0x00 0xf1010000 0x00 0x1000 0x00 0xf1020000 0x00 0x2000>;
 	};
 
 	timer {
@@ -72,12 +73,12 @@
 
 	hypervisor: hypervisor@38000000 {
 		compatible = "xen,xen-4.15", "xen,xen";
-		reg = <0x00 0x38000000 0x00 0x1000000>;
+		reg = <0x00 0x48200000 0x00 0x1000000>;
 		interrupts = <GIC_PPI 0x0f IRQ_TYPE_EDGE IRQ_DEFAULT_PRIORITY>;
 		interrupt-parent = <&gic>;
 	};
 
-	xen_hvc: hvc {
+	xen_consoleio_hvc: hvc {
 		compatible = "xen,uart_hvc";
 		status = "okay";
 	};

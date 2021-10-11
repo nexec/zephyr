@@ -297,7 +297,7 @@ static int gnttab_init(const struct device *d)
 	LOG_DBG("%s: grant table mapped\n", __func__);
 
 	/* TODO: remove this */
-	gnttab_test();
+	/* gnttab_test(); */
 
 	return 0;
 }
