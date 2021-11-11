@@ -6,3 +6,4 @@ zephyr_sources(events.c)
 zephyr_sources(gnttab.c)
 
 #add_subdirectory(xenbus)
+add_subdirectory_ifdef(CONFIG_XEN_INITIAL_DOMAIN dom0)

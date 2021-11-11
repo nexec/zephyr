@@ -36,6 +36,16 @@
                 __device_states_end = .;
         } GROUP_DATA_LINK_IN(RAMABLE_REGION, ROMABLE_REGION)
 
+#if defined(CONFIG_XEN_INITIAL_DOMAIN)
+        SECTION_DATA_PROLOGUE(zephyr_domu,,)
+        {
+		. = ALIGN(64);
+		__zephyr_domu_start = .;
+		KEEP(*(".zephyr_domu"));
+		__zephyr_domu_end = .;
+        } GROUP_DATA_LINK_IN(RAMABLE_REGION, ROMABLE_REGION)
+#endif
+
 #if CONFIG_PM_DEVICE
 	SECTION_DATA_PROLOGUE(pm_device_slots, (NOLOAD),)
 	{

@@ -17,6 +17,13 @@ zephyr_linker_section_configure(SECTION device_states
   KEEP INPUT ".z_devstate" ".z_devstate.*"
 )
 
+if(CONFIG_XEN_INITIAL_DOMAIN)
+zephyr_linker_section(NAME zephyr_domu GROUP DATA_REGION)
+zephyr_linker_section_configure(SECTION zephyr_domu
+  KEEP INPUT ".zephyr_domu""
+)
+endif()
+
 if(CONFIG_PM_DEVICE)
   zephyr_linker_section(NAME pm_device_slots GROUP DATA_REGION TYPE NOLOAD NOINPUT ${XIP_ALIGN_WITH_INPUT})
   zephyr_linker_section_configure(SECTION pm_device_slots KEEP INPUT ".z_pm_device_slots")
