@@ -83,6 +83,8 @@ uint64_t load_domu_image(int domid, uint64_t base_addr)
 	xen_pfn_t mapped_pfns[nr_pages];
 	xen_pfn_t indexes[nr_pages];
 	int err_codes[nr_pages];
+	struct xen_domctl_cacheflush cacheflush;
+	struct xen_memory_reservation reservation;
 
 	struct zimage64_hdr *zhdr = (struct zimage64_hdr *) __zephyr_domu_start;
 	uint64_t base_pfn = PHYS_PFN(base_addr);
@@ -108,21 +110,51 @@ uint64_t load_domu_image(int domid, uint64_t base_addr)
 	printk("Return code for XENMEM_add_to_physmap_batch = %d\n", rc);
 	printk("mapped_domu = %p\n", mapped_domu);
 
+
+
 	printk("Zephyr DomU start addr = %p, end addr = %p, binary size = 0x%llx\n",
 		__zephyr_domu_start, __zephyr_domu_end, domu_size);
 
 	/* Copy binary to domain pages and clear cache */
 	memcpy(mapped_domu, __zephyr_domu_start, domu_size);
-	cache_data_all(K_CACHE_WB);
 
-	/* TODO: remove from physmap and k_free mapped memory */
+	cacheflush.start_pfn = mapped_base_pfn;
+	cacheflush.nr_pfns = nr_pages;
+	rc = xen_domctl_cacheflush(0, &cacheflush);
+	printk("Return code for xen_domctl_cacheflush = %d\n", rc);
+
+	/* Needed to remove mapped DomU pages from Dom0 physmap */
+	for (i = 0; i < nr_pages; i++) {
+		struct xen_remove_from_physmap xrfp;
+		xrfp.domid = DOMID_SELF;
+		xrfp.gpfn = mapped_pfns[i];
+		rc = HYPERVISOR_memory_op(XENMEM_remove_from_physmap, &xrfp);
+		printk("return status for gpfn 0x%llx  =  %d\n", mapped_pfns[i], rc);
+	}
+
+	/*
+	 * After this Dom0 will have memory hole in mapped_domu address,
+	 * needed to populate memory on this address before freeing.
+	 */
+	memset(&reservation, 0, sizeof(reservation));
+	reservation.domid = DOMID_SELF;
+	/* Using page-sized extents (4K) */
+	reservation.extent_order = 0;
+	reservation.nr_extents = nr_pages;
+	reservation.mem_flags = 0;
+	set_xen_guest_handle(reservation.extent_start, mapped_pfns);
+	rc = HYPERVISOR_memory_op(XENMEM_populate_physmap, &reservation);
+	printk(">>> Return code = %d XENMEM_populate_physmap\n", rc);
+
+	k_free(mapped_domu);
 
 	/* .text start address in domU memory */
 	return base_addr + zhdr->text_offset;
 }
 
-static int test_domU_init(const struct device *d)
+int domu_create(void)
 {
+	/* TODO: pass mem, domid etc. as parameters */
 	int rc = 0;
 	uint32_t domid = 1;
 	struct xen_domctl_createdomain config;
@@ -182,6 +214,17 @@ static int test_domU_init(const struct device *d)
 	rc = xen_domctl_unpausedomain(domid);
 	printk("Return code = %d XEN_DOMCTL_unpausedomain\n", rc);
 
-	return 0;
+	return rc;
 }
-SYS_INIT(test_domU_init, POST_KERNEL, CONFIG_APPLICATION_INIT_PRIORITY);
+
+int domu_destroy()
+{
+	/* TODO: pass domid as parameter */
+	int rc;
+	uint32_t domid = 1;
+
+	rc = xen_domctl_destroydomain(domid);
+	printk("Return code = %d XEN_DOMCTL_destroydomain\n", rc);
+
+	return rc;
+}

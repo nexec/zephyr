@@ -37,7 +37,7 @@
 #include "grant_table.h"
 #include "memory.h"
 
-#define XEN_DOMCTL_INTERFACE_VERSION 0x00000013
+#define XEN_DOMCTL_INTERFACE_VERSION 0x00000014
 
 /*
  * NB. xen_domctl.domain is an IN/OUT parameter for this operation.
@@ -178,7 +178,6 @@ struct xen_domctl_max_vcpus {
     uint32_t max;           /* maximum number of vcpus */
 };
 
-
 /* XEN_DOMCTL_scheduler_op */
 /* Scheduler types. */
 /* #define XEN_SCHEDULER_SEDF  4 (Removed) */
@@ -257,6 +256,15 @@ struct xen_domctl_scheduler_op {
 /* XEN_DOMCTL_get_address_size */
 struct xen_domctl_address_size {
     uint32_t size;
+};
+
+/*
+ * ARM: Clean and invalidate caches associated with given region of
+ * guest memory.
+ */
+struct xen_domctl_cacheflush {
+    /* IN: page range to flush. */
+    xen_pfn_t start_pfn, nr_pfns;
 };
 
 struct xen_domctl {
@@ -359,6 +367,7 @@ struct xen_domctl {
         struct xen_domctl_max_vcpus         max_vcpus;
         struct xen_domctl_scheduler_op      scheduler_op;
         struct xen_domctl_address_size      address_size;
+        struct xen_domctl_cacheflush        cacheflush;
         uint8_t                             pad[128];
     } u;
 };

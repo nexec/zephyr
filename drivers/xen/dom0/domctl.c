@@ -143,6 +143,29 @@ int xen_domctl_createdomain(int domid, struct xen_domctl_createdomain *config)
 	return do_domctl(&domctl);
 }
 
+int xen_domctl_destroydomain(int domid)
+{
+	xen_domctl_t domctl;
+
+	memset(&domctl, 0, sizeof(domctl));
+	domctl.cmd = XEN_DOMCTL_destroydomain;
+	domctl.domain = domid;
+
+	return do_domctl(&domctl);
+}
+
+int xen_domctl_cacheflush(int domid,  struct xen_domctl_cacheflush *cacheflush)
+{
+	xen_domctl_t domctl;
+
+	memset(&domctl, 0, sizeof(domctl));
+	domctl.cmd = XEN_DOMCTL_cacheflush;
+	domctl.domain = domid;
+	domctl.u.cacheflush = *cacheflush;
+
+	return do_domctl(&domctl);
+}
+
 int do_domctl(xen_domctl_t *domctl)
 {
 	domctl->interface_version = XEN_DOMCTL_INTERFACE_VERSION;

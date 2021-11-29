@@ -22,6 +22,8 @@ int xen_domctl_max_mem(int domid, uint64_t max_memkb);
 int xen_domctl_set_address_size(int domid, int addr_size);
 int xen_domctl_max_vcpus(int domid, int max_vcpus);
 int xen_domctl_createdomain(int domid, struct xen_domctl_createdomain *config);
+int xen_domctl_cacheflush(int domid,  struct xen_domctl_cacheflush *cacheflush);
+int xen_domctl_destroydomain(int domid);
 int do_domctl(xen_domctl_t *domctl);
 
 #endif /* __XEN_DOM0_DOMCTL_H__ */
