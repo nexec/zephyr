@@ -9,12 +9,12 @@
 #include <xen/dom0/zimage.h>
 #include <xen/generic.h>
 #include <xen/hvm.h>
+#include <xen/memory.h>
 #include <xen/public/hvm/hvm_op.h>
 #include <xen/public/hvm/params.h>
 #include <xen/public/domctl.h>
 #include <xen/public/sysctl.h>
 #include <xen/public/xen.h>
-#include <cache.h>
 
 #include <xen/public/io/console.h>
 
@@ -63,43 +63,25 @@ static int allocate_magic_pages(int domid, uint64_t base_pfn)
 	uint64_t nr_exts = NR_MAGIC_PAGES;
 	xen_pfn_t magic_base_pfn = PHYS_PFN(GUEST_MAGIC_BASE);
 	xen_pfn_t extents[nr_exts];
-	struct xen_memory_reservation reservation;
 	void *mapped_magic;
 	xen_pfn_t mapped_base_pfn, mapped_pfns[nr_exts];
 	int err_codes[nr_exts];
-	struct xen_add_to_physmap_batch xatpb;
 	struct xen_domctl_cacheflush cacheflush;
 
-	memset(&reservation, 0, sizeof(reservation));
+
 	for (i = 0; i < nr_exts; i++) {
 		extents[i] = magic_base_pfn + i;
 	}
-
-	reservation.domid = domid;
-	reservation.extent_order = 0;
-	reservation.nr_extents = nr_exts;
-	reservation.mem_flags = 0;
-	set_xen_guest_handle(reservation.extent_start, extents);
-
-	rc = HYPERVISOR_memory_op(XENMEM_populate_physmap, &reservation);
+	rc = xendom_populate_physmap(domid, 0, nr_exts, 0, extents);
 
 	/* Need to clear memory content of magic pages */
 	mapped_magic = k_aligned_alloc(XEN_PAGE_SIZE, XEN_PAGE_SIZE * nr_exts);
 	mapped_base_pfn = PHYS_PFN((uint64_t) mapped_magic);
-
-	memset(&xatpb, 0, sizeof(xatpb));
 	for (i = 0; i < nr_exts; i++) {
 		mapped_pfns[i] = mapped_base_pfn + i;
 	}
-	set_xen_guest_handle(xatpb.gpfns, mapped_pfns);
-	set_xen_guest_handle(xatpb.idxs, extents);
-	set_xen_guest_handle(xatpb.errs, err_codes);
-	xatpb.domid = 0;
-	xatpb.u.foreign_domid = domid;
-	xatpb.space = XENMAPSPACE_gmfn_foreign;
-	xatpb.size = nr_exts;
-
-	rc = HYPERVISOR_memory_op(XENMEM_add_to_physmap_batch, &xatpb);
+	rc = xendom_add_to_physmap_batch(DOMID_SELF, domid, XENMAPSPACE_gmfn_foreign,
+				nr_exts, extents, mapped_pfns, err_codes);
 
 	memset(mapped_magic, 0, XEN_PAGE_SIZE * nr_exts);
 
@@ -110,38 +92,22 @@ static int allocate_magic_pages(int domid, uint64_t base_pfn)
 
 	/* Needed to remove mapped DomU pages from Dom0 physmap */
 	for (i = 0; i < nr_exts; i++) {
-		struct xen_remove_from_physmap xrfp;
-		xrfp.domid = DOMID_SELF;
-		xrfp.gpfn = mapped_pfns[i];
-		rc = HYPERVISOR_memory_op(XENMEM_remove_from_physmap, &xrfp);
-		printk("return status for gpfn 0x%llx  =  %d\n", mapped_pfns[i], rc);
+		rc = xendom_remove_from_physmap(DOMID_SELF, mapped_pfns[i]);
 	}
 
 	/*
 	 * After this Dom0 will have memory hole in mapped_magic address,
 	 * needed to populate memory on this address before freeing.
 	 */
-	memset(&reservation, 0, sizeof(reservation));
-	reservation.domid = DOMID_SELF;
-	/* Using page-sized extents (4K) */
-	reservation.extent_order = 0;
-	reservation.nr_extents = nr_exts;
-	reservation.mem_flags = 0;
-	set_xen_guest_handle(reservation.extent_start, mapped_pfns);
-	rc = HYPERVISOR_memory_op(XENMEM_populate_physmap, &reservation);
+	rc = xendom_populate_physmap(DOMID_SELF, 0, nr_exts, 0, mapped_pfns);
 	printk(">>> Return code = %d XENMEM_populate_physmap\n", rc);
 
 	k_free(mapped_magic);
 
 	/* TODO: Set HVM params for all allocated pages */
-	struct xen_hvm_param xhv;
+	rc = hvm_set_parameter(HVM_PARAM_CONSOLE_PFN, domid, magic_base_pfn + CONSOLE_PFN_OFFSET);
 
-	xhv.domid = domid;
-	xhv.index = HVM_PARAM_CONSOLE_PFN;
-	xhv.value = magic_base_pfn + CONSOLE_PFN_OFFSET;
-
-	rc = HYPERVISOR_hvm_op(HVMOP_set_param, &xhv);
-
+	/* TODO: fix event-channels for pages */
 	return rc;
 }
 
@@ -154,20 +120,11 @@ static int prepare_domu_physmap(int domid, uint64_t base_pfn,
 	int i, rc;
 	uint64_t nr_exts = ceiling_fraction(domain_mem_kb, EXTENT_2M_SIZE_KB);
 	xen_pfn_t extents[nr_exts];
-	struct xen_memory_reservation reservation;
 
-	memset(&reservation, 0, sizeof(reservation));
 	for (i = 0; i < nr_exts; i++) {
 		extents[i] = base_pfn + (i << EXTENT_2M_PFN_SHIFT);
 	}
-
-	reservation.domid = domid;
-	reservation.extent_order = EXTENT_2M_PFN_SHIFT;
-	reservation.nr_extents = nr_exts;
-	reservation.mem_flags = 0;
-	set_xen_guest_handle(reservation.extent_start, extents);
-
-	rc = HYPERVISOR_memory_op(XENMEM_populate_physmap, &reservation);
+	rc = xendom_populate_physmap(domid, EXTENT_2M_PFN_SHIFT, nr_exts, 0, extents);
 
 	return allocate_magic_pages(domid, base_pfn);
 }
@@ -185,34 +142,22 @@ uint64_t load_domu_image(int domid, uint64_t base_addr)
 	xen_pfn_t indexes[nr_pages];
 	int err_codes[nr_pages];
 	struct xen_domctl_cacheflush cacheflush;
-	struct xen_memory_reservation reservation;
 
 	struct zimage64_hdr *zhdr = (struct zimage64_hdr *) __zephyr_domu_start;
 	uint64_t base_pfn = PHYS_PFN(base_addr);
-	struct xen_add_to_physmap_batch xatpb;
 
 	mapped_domu = k_aligned_alloc(XEN_PAGE_SIZE, XEN_PAGE_SIZE * nr_pages);
 	mapped_base_pfn = PHYS_PFN((uint64_t) mapped_domu);
 
-	memset(&xatpb, 0, sizeof(xatpb));
 	for (i = 0; i < nr_pages; i++) {
 		mapped_pfns[i] = mapped_base_pfn + i;
 		indexes[i] = base_pfn + i;
 	}
-	set_xen_guest_handle(xatpb.gpfns, mapped_pfns);
-	set_xen_guest_handle(xatpb.idxs, indexes);
-	set_xen_guest_handle(xatpb.errs, err_codes);
-	xatpb.domid = 0;
-	xatpb.u.foreign_domid = domid;
-	xatpb.space = XENMAPSPACE_gmfn_foreign;
-	xatpb.size = nr_pages;
 
-	rc = HYPERVISOR_memory_op(XENMEM_add_to_physmap_batch, &xatpb);
+	rc = xendom_add_to_physmap_batch(DOMID_SELF, domid, XENMAPSPACE_gmfn_foreign,
+				nr_pages, indexes, mapped_pfns, err_codes);
 	printk("Return code for XENMEM_add_to_physmap_batch = %d\n", rc);
 	printk("mapped_domu = %p\n", mapped_domu);
-
-
-
 	printk("Zephyr DomU start addr = %p, end addr = %p, binary size = 0x%llx\n",
 		__zephyr_domu_start, __zephyr_domu_end, domu_size);
 
@@ -226,25 +171,14 @@ uint64_t load_domu_image(int domid, uint64_t base_addr)
 
 	/* Needed to remove mapped DomU pages from Dom0 physmap */
 	for (i = 0; i < nr_pages; i++) {
-		struct xen_remove_from_physmap xrfp;
-		xrfp.domid = DOMID_SELF;
-		xrfp.gpfn = mapped_pfns[i];
-		rc = HYPERVISOR_memory_op(XENMEM_remove_from_physmap, &xrfp);
-		printk("return status for gpfn 0x%llx  =  %d\n", mapped_pfns[i], rc);
+		rc = xendom_remove_from_physmap(DOMID_SELF, mapped_pfns[i]);
 	}
 
 	/*
 	 * After this Dom0 will have memory hole in mapped_domu address,
 	 * needed to populate memory on this address before freeing.
 	 */
-	memset(&reservation, 0, sizeof(reservation));
-	reservation.domid = DOMID_SELF;
-	/* Using page-sized extents (4K) */
-	reservation.extent_order = 0;
-	reservation.nr_extents = nr_pages;
-	reservation.mem_flags = 0;
-	set_xen_guest_handle(reservation.extent_start, mapped_pfns);
-	rc = HYPERVISOR_memory_op(XENMEM_populate_physmap, &reservation);
+	rc = xendom_populate_physmap(DOMID_SELF, 0, nr_pages, 0, mapped_pfns);
 	printk(">>> Return code = %d XENMEM_populate_physmap\n", rc);
 
 	k_free(mapped_domu);
@@ -296,12 +230,13 @@ static void console_read_thrd(void *p1, void *p2, void *p3)
 	while (!console_thrd_stop) {
 		memset(buffer, 0, sizeof(buffer));
 		recv = read_from_ring(buffer, sizeof(buffer));
-		printk("Read returned %d characters\n", recv);
 		if (recv) {
 			printk("[domain hvc] %s", buffer);
 		}
-		k_sleep(K_MSEC(500));
+		k_sleep(K_MSEC(1000));
 	}
+
+	/* TODO: add memory freeing */
 	printk("Exiting read thread!\n");
 }
 
@@ -309,24 +244,15 @@ void start_domain_console(int domid)
 {
 	void *mapped_ring;
 	xen_pfn_t ring_pfn, idx;
-	/* adding single page, but only xatpb can map with foreign domid */
-	struct xen_add_to_physmap_batch xatpb;
 	int err, rc;
 
 	mapped_ring = k_aligned_alloc(XEN_PAGE_SIZE, XEN_PAGE_SIZE);
 	ring_pfn = virt_to_pfn(mapped_ring);
 	idx = PHYS_PFN(GUEST_MAGIC_BASE) + CONSOLE_PFN_OFFSET;
 
-	memset(&xatpb, 0, sizeof(xatpb));
-	xatpb.domid = DOMID_SELF;
-	xatpb.u.foreign_domid = domid;
-	xatpb.space = XENMAPSPACE_gmfn_foreign;
-	xatpb.size = 1;
-	set_xen_guest_handle(xatpb.gpfns, &ring_pfn);
-	set_xen_guest_handle(xatpb.idxs, &idx);
-	set_xen_guest_handle(xatpb.errs, &err);
-
-	rc = HYPERVISOR_memory_op(XENMEM_add_to_physmap_batch, &xatpb);
+	/* adding single page, but only xatpb can map with foreign domid */
+	rc = xendom_add_to_physmap_batch(DOMID_SELF, domid, XENMAPSPACE_gmfn_foreign,
+				1, &idx, &ring_pfn, &err);
 	printk("Return code for XENMEM_add_to_physmap_batch = %d, (console ring)\n", rc);
 
 	intf = mapped_ring;
