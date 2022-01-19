@@ -8,7 +8,6 @@
 #include <xen/dom0/domctl.h>
 #include <xen/generic.h>
 #include <xen/public/domctl.h>
-#include <xen/public/sysctl.h>
 #include <xen/public/xen.h>
 #include <cache.h>
 
