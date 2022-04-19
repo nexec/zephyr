@@ -118,6 +118,61 @@ int xen_domctl_set_address_size(int domid, int addr_size)
 	return do_domctl(&domctl);
 }
 
+int xen_domctl_iomem_permission(int domid, uint64_t first_mfn,
+		uint64_t nr_mfns, uint8_t allow_access)
+{
+	xen_domctl_t domctl;
+
+	memset(&domctl, 0, sizeof(domctl));
+	domctl.domain = domid;
+	domctl.cmd = XEN_DOMCTL_iomem_permission;
+	domctl.u.iomem_permission.first_mfn = first_mfn;
+	domctl.u.iomem_permission.nr_mfns = nr_mfns;
+	domctl.u.iomem_permission.allow_access = allow_access;
+
+	return do_domctl(&domctl);
+}
+
+int xen_domctl_memory_mapping(int domid, uint64_t first_gfn, uint64_t first_mfn,
+		uint64_t nr_mfns, uint32_t add_mapping)
+{
+	xen_domctl_t domctl;
+
+	memset(&domctl, 0, sizeof(domctl));
+	domctl.domain = domid;
+	domctl.cmd = XEN_DOMCTL_memory_mapping;
+	domctl.u.memory_mapping.first_gfn = first_gfn;
+	domctl.u.memory_mapping.first_mfn = first_mfn;
+	domctl.u.memory_mapping.nr_mfns = nr_mfns;
+	domctl.u.memory_mapping.add_mapping = add_mapping;
+
+	return do_domctl(&domctl);
+}
+
+int xen_domctl_bind_pt_irq(uint32_t domid, uint32_t machine_irq, uint8_t irq_type,
+		uint8_t bus, uint8_t device, uint8_t intx, uint8_t isa_irq,
+		uint16_t spi)
+{
+	xen_domctl_t domctl;
+	struct xen_domctl_bind_pt_irq *bind = &(domctl.u.bind_pt_irq);
+
+	memset(&domctl, 0, sizeof(domctl));
+	domctl.domain = domid;
+	domctl.cmd = XEN_DOMCTL_bind_pt_irq;
+	switch (irq_type) {
+	case PT_IRQ_TYPE_SPI:
+		bind->irq_type = irq_type;
+		bind->machine_irq = machine_irq;
+		bind->u.spi.spi = spi;
+		break;
+	default:
+		/* TODO: check what to do with others */
+		return -ENOTSUP;
+	}
+
+	return do_domctl(&domctl);
+}
+
 int xen_domctl_max_vcpus(int domid, int max_vcpus)
 {
 	xen_domctl_t domctl;
