@@ -18,9 +18,14 @@ zephyr_linker_section_configure(SECTION device_states
 )
 
 if(CONFIG_XEN_INITIAL_DOMAIN)
-zephyr_linker_section(NAME zephyr_domu GROUP DATA_REGION)
-zephyr_linker_section_configure(SECTION zephyr_domu
-  KEEP INPUT ".zephyr_domu""
+zephyr_linker_section(NAME uboot_domu GROUP DATA_REGION)
+zephyr_linker_section_configure(SECTION uboot_domu
+  KEEP INPUT ".uboot_domu""
+)
+
+zephyr_linker_section(NAME dtb_domu GROUP DATA_REGION)
+zephyr_linker_section_configure(SECTION dtb_domu
+  KEEP INPUT ".dtb_domu""
 )
 endif()
 

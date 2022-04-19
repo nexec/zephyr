@@ -37,13 +37,21 @@
         } GROUP_DATA_LINK_IN(RAMABLE_REGION, ROMABLE_REGION)
 
 #if defined(CONFIG_XEN_INITIAL_DOMAIN)
-        SECTION_DATA_PROLOGUE(zephyr_domu,,)
+        SECTION_DATA_PROLOGUE(uboot_domu,,)
         {
 		. = ALIGN(64);
-		__zephyr_domu_start = .;
-		KEEP(*(".zephyr_domu"));
-		__zephyr_domu_end = .;
+		__uboot_domu_start = .;
+		KEEP(*(".uboot_domu"));
+		__uboot_domu_end = .;
         } GROUP_DATA_LINK_IN(RAMABLE_REGION, ROMABLE_REGION)
+
+	SECTION_DATA_PROLOGUE(dtb_domu,,)
+	{
+		. = ALIGN(64);
+		__domu_dtb_start = .;
+		KEEP(*(".dtb_domu"));
+		__domu_dtb_end = .;
+	} GROUP_DATA_LINK_IN(RAMABLE_REGION, ROMABLE_REGION)
 #endif
 
 #if CONFIG_PM_DEVICE
