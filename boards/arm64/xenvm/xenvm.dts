@@ -48,9 +48,9 @@
 		label = "PSCI";
 	};
 
-	ram: memory@50000000 {
+	ram: memory@60000000 {
 		device_type = "mmio-sram";
-		reg = <0x00 0x50000000 0x00 DT_SIZE_M(16)>;
+		reg = <0x00 0x60000000 0x00 DT_SIZE_M(16)>;
 	};
 
 	gic: interrupt-controller@f1010000 {
