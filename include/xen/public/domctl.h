@@ -265,6 +265,39 @@ struct xen_domctl_address_size {
     uint32_t size;
 };
 
+/* Assign a device to a guest. Sets up IOMMU structures. */
+/* XEN_DOMCTL_assign_device */
+/*
+ * XEN_DOMCTL_test_assign_device: Pass DOMID_INVALID to find out whether the
+ * given device is assigned to any DomU at all. Pass a specific domain ID to
+ * find out whether the given device can be assigned to that domain.
+ */
+/*
+ * XEN_DOMCTL_deassign_device: The behavior of this DOMCTL differs
+ * between the different type of device:
+ *  - PCI device (XEN_DOMCTL_DEV_PCI) will be reassigned to DOM0
+ *  - DT device (XEN_DOMCTL_DEV_DT) will left unassigned. DOM0
+ *  will have to call XEN_DOMCTL_assign_device in order to use the
+ *  device.
+ */
+#define XEN_DOMCTL_DEV_PCI      0
+#define XEN_DOMCTL_DEV_DT       1
+struct xen_domctl_assign_device {
+    /* IN */
+    uint32_t dev;   /* XEN_DOMCTL_DEV_* */
+    uint32_t flags;
+#define XEN_DOMCTL_DEV_RDM_RELAXED      1 /* assign only */
+    union {
+        struct {
+            uint32_t machine_sbdf;   /* machine PCI ID of assigned device */
+        } pci;
+        struct {
+            uint32_t size; /* Length of the path */
+            XEN_GUEST_HANDLE_64(char) path; /* path to the device tree node */
+        } dt;
+    } u;
+};
+
 /* Pass-through interrupts: bind real irq -> hvm devfn. */
 /* XEN_DOMCTL_bind_pt_irq */
 /* XEN_DOMCTL_unbind_pt_irq */
@@ -437,6 +470,7 @@ struct xen_domctl {
         struct xen_domctl_scheduler_op      scheduler_op;
         struct xen_domctl_iomem_permission  iomem_permission;
         struct xen_domctl_address_size      address_size;
+        struct xen_domctl_assign_device     assign_device;
         struct xen_domctl_bind_pt_irq       bind_pt_irq;
         struct xen_domctl_memory_mapping    memory_mapping;
         struct xen_domctl_cacheflush        cacheflush;

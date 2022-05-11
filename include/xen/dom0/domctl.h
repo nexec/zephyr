@@ -24,7 +24,8 @@ int xen_domctl_iomem_permission(int domid, uint64_t first_mfn,
 		uint64_t nr_mfns, uint8_t allow_access);
 int xen_domctl_memory_mapping(int domid, uint64_t first_gfn, uint64_t first_mfn,
 		uint64_t nr_mfns, uint32_t add_mapping);
-int xen_domctl_bind_pt_irq(uint32_t domid, uint32_t machine_irq, uint8_t irq_type,
+int xen_domctl_assign_dt_device(int domid, char *dtdev_path);
+int xen_domctl_bind_pt_irq(int domid, uint32_t machine_irq, uint8_t irq_type,
 		uint8_t bus, uint8_t device, uint8_t intx, uint8_t isa_irq,
 		uint16_t spi);
 int xen_domctl_max_vcpus(int domid, int max_vcpus);
