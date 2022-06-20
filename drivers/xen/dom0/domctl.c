@@ -133,20 +133,57 @@ int xen_domctl_iomem_permission(int domid, uint64_t first_mfn,
 	return do_domctl(&domctl);
 }
 
+/* TODO: check other cases in libxl and implement them */
 int xen_domctl_memory_mapping(int domid, uint64_t first_gfn, uint64_t first_mfn,
 		uint64_t nr_mfns, uint32_t add_mapping)
 {
 	xen_domctl_t domctl;
+	int ret;
+	uint64_t curr, nr_max, done;
+
+	if (!nr_mfns) {
+		return 0;
+	}
 
 	memset(&domctl, 0, sizeof(domctl));
 	domctl.domain = domid;
 	domctl.cmd = XEN_DOMCTL_memory_mapping;
-	domctl.u.memory_mapping.first_gfn = first_gfn;
-	domctl.u.memory_mapping.first_mfn = first_mfn;
-	domctl.u.memory_mapping.nr_mfns = nr_mfns;
 	domctl.u.memory_mapping.add_mapping = add_mapping;
 
-	return do_domctl(&domctl);
+	/* nr_mfns can be big and we need to handle this here */
+	done = 0;
+	nr_max = nr_mfns;
+	do {
+		domctl.u.memory_mapping.first_gfn = first_gfn + done;
+		domctl.u.memory_mapping.first_mfn = first_mfn + done;
+
+		curr = MIN(nr_mfns - done, nr_max);
+		domctl.u.memory_mapping.nr_mfns = curr;
+
+		ret = do_domctl(&domctl);
+		if (ret < 0) {
+			if (ret == -E2BIG) {
+				/* Check if we not reach min amount */
+				if (nr_max <= 1) {
+					break;
+				}
+
+				/* Decrease amount twice and try again */
+				nr_max = nr_max >> 1;
+				continue;
+			} else {
+				break;
+			}
+		}
+
+		done += curr;
+	} while (done < nr_mfns);
+
+	/* We may come here when get E2BIG and reach 1 at nr_max */
+	if (!done) {
+		ret = -1;
+	}
+	return ret;
 }
 
 int xen_domctl_assign_dt_device(int domid, char *dtdev_path)
