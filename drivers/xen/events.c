@@ -21,14 +21,8 @@ static evtchn_handle_t event_channels[EVTCHN_2L_NR_CHANNELS];
 
 static void empty_callback(void *data) { }
 
-static evtchn_handle_t event_channels[EVTCHN_2L_NR_CHANNELS];
-
 /* One bit per port, sets to 1 during binding */
 //static uint64_t evtchn_states[EVTCHN_2L_NR_CHANNELS / (8 * sizeof(uint64_t))];
-
-extern shared_info_t *HYPERVISOR_shared_info;
-
-static void empty_callback(void *data) { }
 
 void notify_evtchn(evtchn_port_t port)
 {
