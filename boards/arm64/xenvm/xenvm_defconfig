@@ -13,7 +13,7 @@ CONFIG_CONSOLE=y
 CONFIG_UART_CONSOLE=y
 
 # Enable PV hypervisor console
-CONFIG_UART_CONSOLEIO_XEN_HVC=y
+#CONFIG_UART_CONSOLEIO_XEN_HVC=y
 
 # Enable logging subsys
 CONFIG_LOG=y
