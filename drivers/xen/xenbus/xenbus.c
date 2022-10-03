@@ -26,15 +26,15 @@
 
 LOG_MODULE_REGISTER(xenstore);
 
-K_KERNEL_STACK_DEFINE(xenstore_thrd_stack, 1024);
+K_KERNEL_STACK_DEFINE(xenstore_thrd_stack, 10240);
 struct k_thread xenstore_thrd;
 k_tid_t xenstore_tid;
 
-K_KERNEL_STACK_DEFINE(read_thrd_stack, 1024);
+K_KERNEL_STACK_DEFINE(read_thrd_stack, 10240);
 struct k_thread read_thrd;
 k_tid_t read_tid;
 
-K_KERNEL_STACK_DEFINE(read_thrd2_stack, 1024);
+K_KERNEL_STACK_DEFINE(read_thrd2_stack, 10240);
 struct k_thread read_thrd2;
 k_tid_t read_tid2;
 
@@ -199,69 +199,127 @@ static void xenbus_isr(void *data)
 	k_sem_give(&xs->sem);
 }
 
+void channel_state(int port)
+{
+	xenbus_printk(">>>>> check_channel_mask(%d) = %d\n", port, check_channel_mask(port));
+	xenbus_printk(">>>>> check_channel_event(%d) = %d\n", port, check_channel_event(port));
+	xenbus_printk(">>>>> check_upcall_pending(%d) = %d\n", 0, check_upcall_pending(0));
+	xenbus_printk(">>>>> check_upcall_masked(%d) = %d\n", 0, check_upcall_masked(0));
+}
+
+static void cat_file(char *buf)
+{
+	char *pdata = xs_read(XBT_NIL, buf);
+	LOG_DBG("READ %s:\n%s", buf, pdata);
+	k_free(pdata);
+}
+
+static void list_dir(char *buf, int size)
+{
+	char **dirs;
+	int x;
+	dirs = xs_ls(XBT_NIL, buf);
+
+	char buf1[128];
+	for (x = 0; dirs[x]; x++) {
+		if (false)
+		{
+			printk("ls %s[%d] -> %s\n", buf, x, dirs[x]);
+		}
+		else
+		{
+			snprintf(buf1, 128, "%s/%s", buf, dirs[x]);
+			LOG_DBG("ls [%d] %s", x, buf1);
+		}
+
+		char **dirs1;
+		dirs1	= xs_ls(XBT_NIL, buf1);
+		int z=0;
+
+		for(z=0;dirs1[z]; z++)
+		{
+			char buf2[128];
+			snprintf(buf2, 128, "%s/%s", buf1, dirs1[z]);
+			list_dir(buf2, 128);
+		}
+
+		if (!z)
+		{
+			cat_file(buf1);
+		}
+		k_free(dirs1);
+	}
+
+	if (!x)
+	{
+		cat_file(buf);
+	}
+
+	k_free(dirs);
+}
+
 static void xenbus_read_thrd(void *p1, void *p2, void *p3)
 {
-	ARG_UNUSED(p1);
 	ARG_UNUSED(p2);
 	ARG_UNUSED(p3);
+
+	int port = *(int*)p1;
+	channel_state(port);
 
 	char **dirs;
 	int x;
 
 	char buf[50];
+	printk("xenbus_ls test results for pre = n0n\n");
 	domid_t domid = xs_get_self_id();
 
 	if (!domid) {
 		printk("NULL domid\n");
-		return;
+		xenbus_printk("NULL domid\n");
+		printk("xenbus_ls test results for pre = NON3\n");
+		k_sleep(K_SECONDS(10));
 	}
 
-	printk("%s: domid returned = %u\n", __func__, domid);
+	channel_state(port);
+
+	xenbus_printk("%s: domid returned = %u\n", __func__, domid);
 
 	snprintf(buf, 50, "/local/domain/%u", domid);
-	printk("%s: running xenbus ls for %s\n", __func__, buf);
-	dirs = xs_ls(XBT_NIL, buf);
+	list_dir(buf, 50);
 
-	printk("xenbus_ls test results for pre = %s\n", buf);
-	for (x = 0; dirs[x]; x++) {
-		printk("ls %s[%d] -> %s\n", buf, x, dirs[x]);
-	}
-	k_free(dirs);
-}
-
-
-static void xenbus_read_thrd2(void *p1, void *p2, void *p3)
-{
-	ARG_UNUSED(p1);
-	ARG_UNUSED(p2);
-	ARG_UNUSED(p3);
-
-	char **dirs;
-	int x;
-
-	char *pre = "domid", buf[50];
-	char *domid = xs_read(XBT_NIL, pre);
-
-	if (!domid) {
-		printk("NULL domid\n");
-		return;
-	}
-
-	printk("%s: second domid returned = %s\n", __func__, domid);
-
-	snprintf(buf, 50, "/local/domain/%s", domid);
-	printk("%s: running xenbus ls for %s\n", __func__, buf);
-	dirs = xs_ls(XBT_NIL, buf);
-
-	/* TODO: check what is wrong with k_free() and who allocates memory for dirs */
-	printk("xenbus_ls test results for pre = %s\n", buf);
-	for (x = 0; dirs[x]; x++)
 	{
-		printk("ls %s[%d] -> %s\n", buf, x, dirs[x]);
-		//k_free(dirs[x]);
+		LOG_DBG("Start watch");
+		struct xenbus_watch *xw;
+		xw = xs_watch_path(XBT_NIL, "memory/target");
+		LOG_DBG("Watch done");
 	}
-//	k_free(dirs);
+
+	{
+		LOG_DBG("XS_RESET_WATCHES start");
+
+		struct xs_iovec req, rep;
+		char *value = NULL;
+		req = INIT_XS_IOVEC_STR_NULL("");
+		int err = xs_msg_reply(XS_RESET_WATCHES, XBT_NIL, &req, 1, &rep);
+
+		if (err == 0) {
+			value = rep.data;
+			LOG_DBG("%s: RESET_WATCHES GOT: %s", __func__, value);
+		} else {
+			LOG_DBG("%s: xs_msg_reply returned err = %d!", __func__, err);
+		}
+
+		LOG_DBG("XS_RESET_WATCHES end, err = %d", err);
+	}
+
+	{
+		LOG_DBG("Initialization complete");
+	}
+
+	k_sleep(K_SECONDS(5));
+	channel_state(port);
 }
+
 
 static int xenbus_init(const struct device *dev)
 {
@@ -280,6 +338,7 @@ static int xenbus_init(const struct device *dev)
 		return ret;
 	}
 	data->evtchn = (evtchn_port_t) xs_evtchn;
+	xenbus_printk("domU listening %d\n", data->evtchn);
 
 	ret = hvm_get_parameter(HVM_PARAM_STORE_PFN, &xs_pfn);
 	if (ret) {
@@ -308,15 +367,12 @@ static int xenbus_init(const struct device *dev)
 	k_thread_name_set(data->thread, "xenstore_thread");
 	printk("%s: xenstore thread inited\n", __func__);
 
-
-
-
 	/* --------------------------------------------------------------- */
 	/* TODO: remove this test code */
 
 	read_tid = k_thread_create(&read_thrd, read_thrd_stack,
 			K_KERNEL_STACK_SIZEOF(read_thrd_stack),
-			xenbus_read_thrd, NULL, NULL, NULL, 7, 0, K_NO_WAIT);
+			xenbus_read_thrd, &data->evtchn, NULL, NULL, 7, 0, K_NO_WAIT);
 	if (!read_tid) {
 		printk("%s: Failed to create read thread\n", __func__);
 		k_thread_abort(xenstore_tid);
@@ -324,17 +380,6 @@ static int xenbus_init(const struct device *dev)
 	}
 	k_thread_name_set(read_tid, "read_thread");
 	printk("%s: read thread inited, stack defined at %p\n", __func__, read_thrd_stack);
-
-//	read_tid2 = k_thread_create(&read_thrd2, read_thrd2_stack,
-//			K_KERNEL_STACK_SIZEOF(read_thrd2_stack),
-//			xenbus_read_thrd2, NULL, NULL, NULL, 6, 0, K_NO_WAIT);
-//	if (read_tid2) {
-//		k_thread_name_set(read_tid2, "read_thread2");
-//		printk("%s: read thread 2 inited, stack defined at %p\n", __func__, read_thrd2_stack);
-//	} else {
-//		printk("%s: Failed to create read thread 2\n", __func__);
-//	}
-
 
 	return ret;
 }
