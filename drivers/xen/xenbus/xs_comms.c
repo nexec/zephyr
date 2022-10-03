@@ -93,7 +93,6 @@ static int get_free_entry_idx(struct xs_request_pool *pool)
 	/* Add exact fired bit position */
 	res += __builtin_ctzl(pool->entries_bm[i]);
 
-	xenbus_printk("%s: returning entry #%d, i = %d\n", __func__, res, i);
 	return res;
 }
 
@@ -106,7 +105,6 @@ static struct xs_request *xs_request_get(void)
 	unsigned long entry_idx;
 	k_spinlock_key_t key;
 
-	xenbus_printk("%s: in\n", __func__);
 	/* wait for an available entry */
 	while (1) {
 		key = k_spin_lock(&xs_req_pool.lock);
@@ -144,8 +142,6 @@ static void xs_request_put(struct xs_request *xs_req)
 	uint32_t reqid = xs_req->hdr.req_id;
 	k_spinlock_key_t key;
 
-	xenbus_printk("%s: in, reqid = %d, xs_req - %p\n", __func__,
-			reqid, xs_req);
 	key = k_spin_lock(&xs_req_pool.lock);
 
 	__ASSERT(sys_test_bit((mem_addr_t) xs_req_pool.entries_bm, reqid) != 1,
@@ -170,7 +166,6 @@ static struct xs_request *xs_request_peek(void)
 
 	key = k_spin_lock(&xs_req_pool.lock);
 	node = sys_slist_get(&xs_req_pool.queued);
-	xenbus_printk("%s: get request node from list - %p\n", __func__, node);
 	xs_req = SYS_SLIST_CONTAINER(node, xs_req, next);
 	k_spin_unlock(&xs_req_pool.lock, key);
 
@@ -182,7 +177,6 @@ static void xs_request_enqueue(struct xs_request *xs_req)
 	k_spinlock_key_t key;
 
 	key = k_spin_lock(&xs_req_pool.lock);
-	xenbus_printk("%s: in, xs_req->next = %p\n", __func__, &xs_req->next);
 	sys_slist_append(&xs_req_pool.queued, &xs_req->next);
 	k_spin_unlock(&xs_req_pool.lock, key);
 }
@@ -193,7 +187,6 @@ static struct xs_request *xs_request_dequeue(void)
 	sys_snode_t *node;
 	k_spinlock_key_t key;
 
-	xenbus_printk("%s: in\n", __func__);
 	key = k_spin_lock(&xs_req_pool.lock);
 	node = sys_slist_peek_head(&xs_req_pool.queued);
 	if (node) {
@@ -223,7 +216,7 @@ static int xs_avail_space_for_read(unsigned int size)
 
 static int xs_avail_to_write(void)
 {
-	xenbus_printk("%s: is empty = %d\n", __func__, sys_slist_is_empty(&xs_req_pool.queued));
+//	xenbus_printk("%s: is empty = %d\n", __func__, sys_slist_is_empty(&xs_req_pool.queued));
 	return (xs_hdlr->buf->req_prod - xs_hdlr->buf->req_cons != XENSTORE_RING_SIZE &&
 		!sys_slist_is_empty(&xs_req_pool.queued));
 }
@@ -301,8 +294,6 @@ static int xs_msg_write(struct xsd_sockmsg *xsd_req,
 		}
 	}
 
-	xenbus_printk("%s: complete\n", __func__);
-	LOG_ERR("Complete main loop of %s.\n", __func__);
 	__ASSERT_NO_MSG(buf_off == 0);
 	__ASSERT_NO_MSG(req_off == req_size);
 	__ASSERT_NO_MSG(prod <= xs_hdlr->buf->req_cons + XENSTORE_RING_SIZE);
@@ -328,6 +319,7 @@ int xs_msg_reply(enum xsd_sockmsg_type msg_type, xenbus_transaction_t xbt,
 	if (req_iovecs == NULL)
 		return -EINVAL;
 
+	xenbus_printk("%s\n", __func__);
 	xs_req = xs_request_get();
 	xs_req->hdr.type = msg_type;
 	/* req_id was set on pool init  */
@@ -344,20 +336,32 @@ int xs_msg_reply(enum xsd_sockmsg_type msg_type, xenbus_transaction_t xbt,
 	/* wake xenstore thread to send it */
 	k_sem_give(&xs_hdlr->sem);
 
+	xenbus_printk("%s: Wait reply...\n", __func__);
 	/* wait reply */
 	while (1) {
 		k_sem_take(&xs_req->sem, K_FOREVER);
 		if (xs_req->reply.recvd != 0) {
 			break;
 		}
+		else
+		{
+	xenbus_printk("%s: no reply yet...\n", __func__);
+		}
 	}
 
+	xenbus_printk("%s: got reply\n", __func__);
 	err = -xs_req->reply.errornum;
 	if (err == 0) {
 		if (rep_iovec)
+		{
 			*rep_iovec = xs_req->reply.iovec;
+			xenbus_printk("%s: got reply, len=%d, data='%s'\n", __func__, rep_iovec->len, rep_iovec->data);
+		}
 		else
+		{
+			xenbus_printk("%s: reply payload is null symbol\n", __func__);
 			k_free(xs_req->reply.iovec.data);
+		}
 	}
 
 	xs_request_put(xs_req);
@@ -371,7 +375,7 @@ void xs_send(void)
 	int err;
 
 	xs_req = xs_request_peek();
-	xenbus_printk("%s: peeked req - %p\n", __func__, xs_req);
+//	xenbus_printk("%s: peeked req - %p\n", __func__, xs_req);
 	while (xs_req != NULL) {
 		err = xs_msg_write(&xs_req->hdr, xs_req->payload_iovecs);
 		if (err) {
@@ -407,6 +411,7 @@ static int reply_to_errno(const char *reply)
 	err = -EINVAL;
 
 out:
+	LOG_DBG("Xenstore error: %s=%d\n", reply, err);
 	return err;
 }
 
@@ -438,6 +443,8 @@ static void process_reply(struct xsd_sockmsg *hdr, char *payload)
 		k_free(payload);
 		return;
 	}
+
+	xenbus_printk("%s: type='%d'\n", __func__, hdr->type);
 
 	xs_req = &xs_req_pool.entries[hdr->req_id];
 
@@ -500,15 +507,23 @@ static void xs_msg_read(struct xsd_sockmsg *hdr)
 
 	/* Remote must not see available space until we've copied the reply */
 	compiler_barrier();
-	xs_hdlr->buf->rsp_cons += sizeof(*hdr) + hdr->len;
+	int delta = sizeof(*hdr) + hdr->len;
+	xs_hdlr->buf->rsp_cons += delta;
 
 	if (xs_hdlr->buf->rsp_prod - cons >= XENSTORE_RING_SIZE)
+	{
 		notify_evtchn(xs_hdlr->evtchn);
+	}
 
 	if (hdr->type == XS_WATCH_EVENT)
+	{
 		process_watch_event(payload);
+	}
 	else
+	{
+		xenbus_printk("%s: process_reply (cons: %d += %d, len: %d)\n", __func__, cons, delta, hdr->len);
 		process_reply(hdr, payload);
+	}
 }
 
 
@@ -517,11 +532,14 @@ static void xs_recv(void)
 	struct xsd_sockmsg msg;
 
 	while (1) {
-		LOG_DBG("Rsp_cons %d, rsp_prod %d.\n",
-			    xs_hdlr->buf->rsp_cons, xs_hdlr->buf->rsp_prod);
+//		LOG_DBG("Rsp_cons %d, rsp_prod %d.",
+//			    xs_hdlr->buf->rsp_cons, xs_hdlr->buf->rsp_prod);
 
 		if (!xs_avail_space_for_read(sizeof(msg)))
+		{
+//			LOG_DBG("Nothing to read? %ld", sizeof(msg));
 			break;
+		}
 
 		/* Make sure data is read after reading the indexes */
 		compiler_barrier();
@@ -534,18 +552,21 @@ static void xs_recv(void)
 			sizeof(msg)
 		);
 
-		LOG_DBG("Msg len %lu, %u avail, id %u.\n",
-			    msg.len + sizeof(msg),
-			    xs_hdlr->buf->rsp_prod - xs_hdlr->buf->rsp_cons,
-			    msg.req_id);
+//		LOG_DBG("Msg len %lu, %u avail, id %u.",
+//			    msg.len + sizeof(msg),
+//			    xs_hdlr->buf->rsp_prod - xs_hdlr->buf->rsp_cons,
+//			    msg.req_id);
 
 		if (!xs_avail_space_for_read(sizeof(msg) + msg.len))
+		{
+			LOG_DBG("No message to read? %ld", sizeof(msg) + msg.len);
 			break;
+		}
 
 		/* Make sure data is read after reading the indexes */
 		compiler_barrier();
 
-		LOG_DBG("Message is good.\n");
+//		LOG_DBG("Message is good.");
 		xs_msg_read(&msg);
 	}
 }
@@ -553,23 +574,22 @@ static void xs_recv(void)
 
 void xenbus_main_thrd(void *p1, void *p2, void *p3)
 {
+	int i = 0;
 	while (1) {
-		xenbus_printk("%s: taking semaphore\n", __func__);
 		k_sem_take(&xs_hdlr->sem, K_FOREVER);
 		if (!xs_avail_work()) {
-			xenbus_printk("%s: took semaphore, queue empty!\n", __func__);
 			continue;
 		}
 
 		if (xs_avail_to_write()) {
-			xenbus_printk("%s: avail to write\n", __func__);
 			xs_send();
 		}
 
 		if (xs_avail_to_read()) {
-			xenbus_printk("%s: avail to read\n", __func__);
 			xs_recv();
 		}
+
+		++i;
 	}
 }
 

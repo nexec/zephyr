@@ -27,6 +27,7 @@ LOG_MODULE_DECLARE(xenbus);
 static inline int xs_msg(enum xsd_sockmsg_type type, xenbus_transaction_t xbt,
 		struct xs_iovec *reqs, int reqs_num)
 {
+	xenbus_printk("%s, type=%d\n", __func__, type);
 	return xs_msg_reply(type, xbt, reqs, reqs_num, NULL);
 }
 
@@ -45,6 +46,7 @@ char *xs_read(xenbus_transaction_t xbt, const char *path)
 	if (err == 0) {
 		value = rep.data;
 	} else {
+		xenbus_printk("%s: xs_msg_reply returned err = %d!\n", __func__, err);
 		printk("%s: xs_msg_reply returned err = %d!\n", __func__, err);
 	}
 
@@ -118,8 +120,10 @@ char **xs_ls(xenbus_transaction_t xbt, const char *path)
 	}
 
 	req = INIT_XS_IOVEC_STR_NULL((char *) path);
+
 	err = xs_msg_reply(XS_DIRECTORY, xbt, &req, 1, &rep);
 	if (err) {
+		xenbus_printk("%s XS_DIRECTORY err=%d\n", __func__, err);
 		return NULL;
 	}
 
@@ -241,6 +245,7 @@ static struct xs_acl *__xs_get_acl(xenbus_transaction_t xbt, const char *path,
 	}
 
 	req = INIT_XS_IOVEC_STR_NULL((char *) path);
+	xenbus_printk("%s\n", __func__);
 	err = xs_msg_reply(XS_GET_PERMS, xbt, &req, 1, &rep);
 	if (err) {
 		return NULL;;
@@ -544,6 +549,7 @@ int xs_transaction_start(xenbus_transaction_t *xbt)
 		return -EINVAL;
 
 	req = INIT_XS_IOVEC_STR_NULL("");
+	xenbus_printk("%s\n", __func__);
 	err = xs_msg_reply(XS_TRANSACTION_START, 0, &req, 1, &rep);
 	if (err)
 		return err;
@@ -581,6 +587,7 @@ int xs_debug_msg(const char *msg)
 	req[1] = INIT_XS_IOVEC_STR((char *) msg);
 	req[2] = INIT_XS_IOVEC_STR_NULL("");
 
+	xenbus_printk("%s\n", __func__);
 	err = xs_msg_reply(XS_DEBUG, XBT_NIL, req, ARRAY_SIZE(req), &rep);
 	if (err)
 		return err;
@@ -655,7 +662,10 @@ domid_t xs_get_self_id(void)
 
 	domid_str = xs_read(XBT_NIL, "domid");
 	if (!domid_str)
+	{
+		xenbus_printk("Error reading domain id.");
 		LOG_ERR("Error reading domain id.");
+	}
 
 	domid = (domid_t) strtoul(domid_str, NULL, 10);
 
