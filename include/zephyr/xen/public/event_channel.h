@@ -84,6 +84,45 @@ struct evtchn_send {
 };
 typedef struct evtchn_send evtchn_send_t;
 
+/*
+ *  * EVTCHNOP_status: Get the current status of the communication channel which
+ *  * has an endpoint at <dom, port>.
+ *  * NOTES:
+ *  *  1. <dom> may be specified as DOMID_SELF.
+ *  *  2. Only a sufficiently-privileged domain may obtain the status of an event
+ *  *     channel for which <dom> is not DOMID_SELF.
+ *  */
+struct evtchn_status {
+	/* IN parameters */
+	domid_t  dom;
+	evtchn_port_t port;
+
+	/* OUT parameters */
+#define EVTCHNSTAT_closed       0 /* Channel is not in use.                 */
+#define EVTCHNSTAT_unbound      1 /* Channel is waiting interdom connection.*/
+#define EVTCHNSTAT_interdomain  2 /* Channel is connected to remote domain. */
+#define EVTCHNSTAT_pirq         3 /* Channel is bound to a phys IRQ line.   */
+#define EVTCHNSTAT_virq         4 /* Channel is bound to a virtual IRQ line */
+#define EVTCHNSTAT_ipi          5 /* Channel is bound to a virtual IPI line */
+	uint32_t status;
+	uint32_t vcpu;            /* VCPU to which this channel is bound.   */
+	union {
+		struct {
+			domid_t dom;
+		} unbound;        /* EVTCHNSTAT_unbound */
+
+		struct {
+			domid_t dom;
+			evtchn_port_t port;
+		} interdomain;    /* EVTCHNSTAT_interdomain */
+
+		uint32_t pirq;    /* EVTCHNSTAT_pirq */
+		uint32_t virq;    /* EVTCHNSTAT_virq */
+	} u;
+};
+typedef struct evtchn_status evtchn_status_t;
+
+
 #define EVTCHN_2L_NR_CHANNELS (sizeof(xen_ulong_t) * sizeof(xen_ulong_t) * 64)
 
 #endif /* __XEN_PUBLIC_EVENT_CHANNEL_H__ */
