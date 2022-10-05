@@ -13,6 +13,7 @@
 #include <kernel.h>
 
 int xen_domctl_scheduler_op(int domid, struct xen_domctl_scheduler_op *sched_op);
+int xen_domctl_pausedomain(int domid);
 int xen_domctl_unpausedomain(int domid);
 int xen_domctl_resumedomain(int domid);
 int xen_domctl_getvcpucontext(int domid, int vcpu, vcpu_guest_context_t *ctxt);

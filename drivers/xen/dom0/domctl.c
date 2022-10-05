@@ -27,6 +27,17 @@ int xen_domctl_scheduler_op(int domid, struct xen_domctl_scheduler_op *sched_op)
 	return do_domctl(&domctl);
 }
 
+int xen_domctl_pausedomain(int domid)
+{
+	xen_domctl_t domctl;
+
+	memset(&domctl, 0, sizeof(domctl));
+	domctl.cmd = XEN_DOMCTL_pausedomain;
+	domctl.domain = domid;
+
+	return do_domctl(&domctl);
+}
+
 int xen_domctl_unpausedomain(int domid)
 {
 	xen_domctl_t domctl;
