@@ -37,12 +37,20 @@
         } GROUP_DATA_LINK_IN(RAMABLE_REGION, ROMABLE_REGION)
 
 #if defined(CONFIG_XEN_INITIAL_DOMAIN)
-        SECTION_DATA_PROLOGUE(uboot_domd,,)
+        SECTION_DATA_PROLOGUE(img_domd,,)
         {
 		. = ALIGN(64);
-		__uboot_domd_start = .;
-		KEEP(*(".uboot_domd"));
-		__uboot_domd_end = .;
+		__img_domd_start = .;
+		KEEP(*(".img_domd"));
+		__img_domd_end = .;
+        } GROUP_DATA_LINK_IN(RAMABLE_REGION, ROMABLE_REGION)
+
+        SECTION_DATA_PROLOGUE(img_domu,,)
+        {
+		. = ALIGN(64);
+		__img_domu_start = .;
+		KEEP(*(".img_domu"));
+		__img_domu_end = .;
         } GROUP_DATA_LINK_IN(RAMABLE_REGION, ROMABLE_REGION)
 
 	SECTION_DATA_PROLOGUE(dtb_domd,,)
