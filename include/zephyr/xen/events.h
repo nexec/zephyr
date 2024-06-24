@@ -19,9 +19,14 @@ struct event_channel_handle {
 
 typedef struct event_channel_handle evtchn_handle_t;
 
-void notify_evtchn(evtchn_port_t port);
+int notify_evtchn(evtchn_port_t port);
 int bind_event_channel(evtchn_port_t port, evtchn_cb_t cb, void *data);
+int evtchn_status(evtchn_status_t *status);
 int unbind_event_channel(evtchn_port_t port);
+int check_channel_mask(evtchn_port_t port);
+int check_channel_event(evtchn_port_t port);
+int check_upcall_pending(int vcpu);
+int check_upcall_masked(int vcpu);
 
 int xen_events_init(void);
 

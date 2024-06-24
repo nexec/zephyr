@@ -102,7 +102,7 @@ static void xen_hvc_poll_out(const struct device *dev,
 			unsigned char c)
 {
 	/* Not a good solution (notifying HV every time), but needed for poll_out */
-	(void) write_to_ring(dev, &c, sizeof(c));
+	while (!write_to_ring(dev, &c, sizeof(c))) { }
 }
 
 #ifdef CONFIG_UART_INTERRUPT_DRIVEN

@@ -8,6 +8,7 @@
 #include <zephyr/xen/public/xen.h>
 #include <zephyr/xen/public/event_channel.h>
 #include <zephyr/xen/events.h>
+#include <xen/xenbus/xs.h>
 
 #include <errno.h>
 #include <zephyr/kernel.h>
@@ -21,7 +22,10 @@ static evtchn_handle_t event_channels[EVTCHN_2L_NR_CHANNELS];
 
 static void empty_callback(void *data) { }
 
-void notify_evtchn(evtchn_port_t port)
+/* One bit per port, sets to 1 during binding */
+//static uint64_t evtchn_states[EVTCHN_2L_NR_CHANNELS / (8 * sizeof(uint64_t))];
+
+int notify_evtchn(evtchn_port_t port)
 {
 	struct evtchn_send send;
 
@@ -31,7 +35,27 @@ void notify_evtchn(evtchn_port_t port)
 
 	send.port = port;
 
-	HYPERVISOR_event_channel_op(EVTCHNOP_send, &send);
+	return HYPERVISOR_event_channel_op(EVTCHNOP_send, &send);
+}
+
+static void clear_event_channel(evtchn_port_t port)
+{
+	shared_info_t *s = HYPERVISOR_shared_info;
+
+	sys_bitfield_clear_bit((mem_addr_t) s->evtchn_pending, port);
+}
+
+int unmask_event_channel(evtchn_port_t port)
+{
+	shared_info_t *s = HYPERVISOR_shared_info;
+
+	__ASSERT(port < EVTCHN_2L_NR_CHANNELS,
+		"%s: trying to unmask invalid evtchn #%u\n",
+		__func__, port);
+
+	sys_bitfield_clear_bit((mem_addr_t) s->evtchn_mask, port);
+
+	return 0;
 }
 
 int bind_event_channel(evtchn_port_t port, evtchn_cb_t cb, void *data)
@@ -49,6 +73,8 @@ int bind_event_channel(evtchn_port_t port, evtchn_cb_t cb, void *data)
 
 	event_channels[port].priv = data;
 	event_channels[port].cb = cb;
+//	unmask_event_channel(port);
+//	clear_event_channel(port);
 
 	return 0;
 }
@@ -73,13 +99,24 @@ int mask_event_channel(evtchn_port_t port)
 		"%s: trying to mask invalid evtchn #%u\n",
 		__func__, port);
 
-
 	sys_bitfield_set_bit((mem_addr_t) s->evtchn_mask, port);
 
 	return 0;
 }
 
-int unmask_event_channel(evtchn_port_t port)
+int check_upcall_masked(int vcpu)
+{
+	shared_info_t *s = HYPERVISOR_shared_info;
+	return s->vcpu_info[vcpu].pad0;
+}
+
+int check_upcall_pending(int vcpu)
+{
+	shared_info_t *s = HYPERVISOR_shared_info;
+	return s->vcpu_info[vcpu].evtchn_upcall_pending;
+}
+
+int check_channel_mask(evtchn_port_t port)
 {
 	shared_info_t *s = HYPERVISOR_shared_info;
 
@@ -87,16 +124,19 @@ int unmask_event_channel(evtchn_port_t port)
 		"%s: trying to unmask invalid evtchn #%u\n",
 		__func__, port);
 
-	sys_bitfield_clear_bit((mem_addr_t) s->evtchn_mask, port);
-
-	return 0;
+	return sys_bitfield_test_bit((mem_addr_t) s->evtchn_mask, port);
 }
 
-static void clear_event_channel(evtchn_port_t port)
+int check_channel_event(evtchn_port_t port)
 {
 	shared_info_t *s = HYPERVISOR_shared_info;
 
-	sys_bitfield_clear_bit((mem_addr_t) s->evtchn_pending, port);
+	__ASSERT(port < EVTCHN_2L_NR_CHANNELS,
+		"%s: trying to mask invalid evtchn #%u\n",
+		__func__, port);
+
+
+        return sys_bitfield_test_bit((mem_addr_t) s->evtchn_pending, port);
 }
 
 static inline xen_ulong_t get_pending_events(xen_ulong_t pos)
@@ -180,5 +220,11 @@ int xen_events_init(void)
 	irq_enable(DT_IRQ_BY_IDX(DT_INST(0, xen_xen), 0, irq));
 
 	LOG_INF("%s: events inited\n", __func__);
+	xenbus_printk("%s: events inited\n", __func__);
 	return 0;
+}
+
+int evtchn_status(evtchn_status_t *status)
+{
+	return HYPERVISOR_event_channel_op(EVTCHNOP_status, status);
 }

@@ -3,3 +3,5 @@
 
 zephyr_sources(hvm.c)
 zephyr_sources(events.c)
+
+add_subdirectory(xenbus)
